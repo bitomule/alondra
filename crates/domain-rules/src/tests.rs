@@ -149,7 +149,7 @@ fn scheduled_request_task(request_id: &str, task_id: &str) -> (Request, Task) {
         documents: BTreeMap::new(),
         archived: false,
         model: None,
-        waiting_for_tasks: Default::default(), ended_task_waits: Default::default(), delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), paused_in_queue: None, ending: None, stalls: 0, stall_closing: None, open_pr: None, released: None, stages: Default::default(), specs: Default::default(), continues: None, worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, move_refused: None, account: None, allowed: Default::default(), project: None,
+        waiting_for_tasks: Default::default(), ended_task_waits: Default::default(), delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), paused_in_queue: None, ending: None, stalls: 0, stall_closing: None, open_pr: None, released: None, stages: Default::default(), specs: Default::default(), validation: Default::default(), continues: None, worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, move_refused: None, account: None, allowed: Default::default(), project: None,
     };
     (request, task)
 }
@@ -3281,9 +3281,13 @@ fn variant_index(c: &Command) -> usize {
         Command::RequestSpecChange { .. } => 150,
         Command::ProposeAmendment { .. } => 151,
         Command::ProposeDecision { .. } => 152,
+        Command::ReadyForValidation { .. } => 153,
+        Command::RecordValidation { .. } => 154,
+        Command::EndValidation { .. } => 155,
+        Command::RecordDeliveredValidation { .. } => 156,
     }
 }
-const COMMAND_KINDS: usize = 153;
+const COMMAND_KINDS: usize = 157;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -3427,6 +3431,11 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::RequestSpecChange { task_id: ids.task.into(), reason: "Missing case".into() }, false),
         (Command::ProposeAmendment { task_id: ids.task.into(), amendment_id: "a1".into(), files: vec![], check: Default::default() }, false),
         (Command::ProposeDecision { task_id: ids.task.into(), decision: Default::default(), files: Default::default(), check: Default::default() }, false),
+        (Command::ReadyForValidation { task_id: ids.task.into(), head: "a".repeat(40), items: vec![], scope: vec![] }, false),
+        (Command::RecordValidation { task_id: ids.task.into(), subject: "billing/unit".into(), check: crate::ValidationKind::Suite, verdict: crate::ValidationVerdict::Met,
+            reasoning: None, nearest_wrong: None, output: None, evidence: vec![], inputs: "sha256:0".into() }, false),
+        (Command::EndValidation { task_id: ids.task.into(), findings: "It fails".into() }, false),
+        (Command::RecordDeliveredValidation { task_id: ids.task.into(), validation: Default::default() }, false),
         (Command::BeginStageHandover { task_id: ids.task.into(), expected_selection: "fixture".into(), transition: "stage".into(), pending: alondra_core::model_selection::PendingTaskSelection {
             account: alondra_core::accounts::AccountKey::native(alondra_core::accounts::Provider::Claude),
             model: alondra_core::model_selection::ModelSelection { model: alondra_core::model_selection::ModelKey { provider: alondra_core::accounts::Provider::Claude, model: "fixture".into() }, reasoning_effort: None, catalog_revision: "fixture".into() }, reason: "The implementer takes it over".into(),

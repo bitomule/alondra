@@ -386,3 +386,72 @@ never turns specs off.
 | No `alondra.toml`, or specs not enabled | Nothing: `propose_specs` is refused with `specs_disabled` |
 | `alondra.toml` that cannot be read | No plan is approved and no result delivered until it is fixed; the task shows why |
 | `committed = false` | The approved specs live in Alondra and are never written into the worktree nor committed; the card says nothing can be regenerated from them later |
+
+## Validation of a task
+
+In such a project the implementer of a task in stages never delivers work the engine still lists as
+not validated. A new agent, the validator, checks it, and Alondra counts only what that validator
+recorded, each at the fingerprint Alondra itself read of the commit it validates (M-LIFE-17 and
+M-LIFE-18 of `docs/architecture/state-machines.md`).
+
+### Ready for validation
+
+The implementer commits its work and calls `ready_for_validation`. Alondra reads that commit with
+the engine and opens a round with every item that is not `valid`, each with its fingerprint, and
+the files the branch changed outside the task's components. It is refused with
+`nothing_to_validate` when nothing is listed (the implementer then delivers as usual),
+`uncommitted_work` while the worktree holds changes no commit has, `specs_uncovered` while a
+scenario has no test and is no judgment, and `spec_change_pending` while a change of the specs waits.
+
+### The validator
+
+A new execution in the validator's role starts from what Alondra writes for it: the round's commit
+and items, and the `spec-validation` skill. It runs each suite (`alondra spec run`), judges each
+judgment (`alondra spec record`) and records each result with `record_validation`: subject, check
+(`suite`, `adequate`, `judged`, `reference`), verdict (`met`, `unmet`, `incomplete`), the end of a
+run's output, a judgment's reasoning and, for `adequate`, the nearest wrong behaviour the tests
+would still accept. Only the validator records; Alondra fills the fingerprint itself.
+
+It then delivers with only the ledger committed, or ends the round with `end_validation`:
+
+| The round holds | What follows |
+|---|---|
+| an item `unmet` | the work goes back to the implementer with the findings; the third round in a row asks the user: go on with the author's model, change the specs, or cancel |
+| only items it could not run | a new validator tries once more; then the user decides: validate again or cancel |
+
+What comes after a validated delivery (the user asks for changes, the pull request has conflicts)
+goes back to an implementer. A commit the pull request receives after the delivery withdraws it and
+the validator validates again only what changed fingerprint. A validator whose host is lost keeps
+what it recorded; what it owed is `incomplete` and is owed again when the task goes on.
+
+### The gate
+
+A final delivery of a task in stages is read on its commit before it reaches the user, within the
+time the delivery review gives git:
+
+| Refusal | When |
+|---|---|
+| `validation_required` | the implementer delivers while the engine lists something |
+| `specs_differ` | a spec, boundary or decision differs from what the user approved |
+| `validation_pending` | `alondra spec validate` is not clean on the delivered commit |
+| `spec_change_open` | a change of the specs waits for its author or the user |
+| `ledger_unrecorded` | a ledger entry the branch changed has no record of the validator with its fingerprint and verdict |
+| `changed_after_validation` | anything but the ledger changed after the round's commit |
+| `worktree_unreadable` | git cannot read the worktree, or not in time |
+
+So the three ways to cheat are caught: a spec changed without approval (`specs_differ`), a ledger
+written by hand (`ledger_unrecorded`), a test weakened after its judgment (its `adequate`
+fingerprint changes, so the delivery is `validation_pending` until a validator judges it again).
+
+### What the delivery shows
+
+The card of a validated delivery has a section «Specs», read from the delivered commit when it
+passed the gate: each scenario of the task's components with the engine's state of each check, the
+tests that declare it (file and line) and the suites that hold them with their result, and what the
+validator judged, always labelled a judgment; the suites; the files changed outside the task's
+components; and the reference prose the branch changed. A point of the approved plan may cite a
+scenario as `scenario` evidence (`billing.partial/part`); the card shows how it was validated.
+
+| The specs of a validated delivery | The rest of its evidence |
+|---|---|
+| ![Each scenario with its test, suite and judgment](../images/spec-validation/delivery-specs-en-dark.png) | ![Suites, files outside the components and scenarios as evidence of the plan](../images/spec-validation/delivery-evidence-en-dark.png) |

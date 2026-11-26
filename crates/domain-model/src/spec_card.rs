@@ -3,7 +3,8 @@
 //! own language from the task's record.
 
 use crate::specs::{self, SpecDirs, SpecFileKind, SpecFiles};
-use crate::{CardKind, CardSpec, ContentKind, QuestionOption, TaskSpecs, clip};
+use crate::validation::{TaskValidation, ValidationState};
+use crate::{CardKind, CardSpec, ContentKind, QuestionOption, Task, TaskSpecs, clip};
 use alondra_core::text::Lang;
 use alondra_core::text::{t, tf};
 use crate::specs::engine;
@@ -12,8 +13,16 @@ use std::collections::BTreeMap;
 
 pub const AMENDMENT_PREFIX: &str = "spec-amendment-";
 pub const DECISION_PREFIX: &str = "spec-decision-";
+pub const VALIDATION_PREFIX: &str = "spec-validation-";
 pub const APPROVE: &str = "approve";
 pub const REJECT: &str = "reject";
+/// The implementer goes on with the model of the task's author.
+pub const STRONGER: &str = "stronger";
+/// The task goes back to an author to change the specs the work cannot meet.
+pub const CHANGE_SPECS: &str = "change_specs";
+/// A new validator tries again what could not be run.
+pub const VALIDATE_AGAIN: &str = "validate_again";
+pub const CANCEL: &str = "cancel";
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -22,6 +31,16 @@ pub enum SpecCard {
     Amendment { task: String, id: String },
     /// A lasting decision the author proposed on a card of its own.
     Decision { task: String, id: String },
+    /// The validator sent the work back in the last round Alondra allows in a row.
+    ValidationExhausted {
+        task: String,
+        round: u32,
+        /// The task has approved specs an author can change.
+        #[serde(default)]
+        specs: bool,
+    },
+    /// Two validators in a row could not run what the work still needs.
+    ValidationStuck { task: String, round: u32 },
 }
 
 impl SpecCard {
@@ -52,13 +71,31 @@ impl SpecCard {
                     t!(lang, "Nothing is written; Alondra keeps that you rejected it, with what you write here",
                         "No se escribe nada; Alondra guarda que la rechazaste, con lo que escribas aquí")),
             ],
+            Self::ValidationExhausted { specs, .. } => [
+                option(STRONGER, t!(lang, "Go on with the strong model", "Seguir con el modelo fuerte"),
+                    t!(lang, "A new implementer takes the task with the model of its author and the validator's findings; the validator checks it again after",
+                        "Un implementador nuevo sigue con el modelo del autor y los hallazgos del validador; después el validador lo vuelve a comprobar")),
+                option(CHANGE_SPECS, t!(lang, "Change the specs", "Cambiar las specs"),
+                    t!(lang, "An author drafts a change of the specs these scenarios rest on, and you decide on it before the work goes on",
+                        "Un autor redacta un cambio de las specs en las que se apoyan estos escenarios, y decides sobre él antes de seguir")),
+                option(CANCEL, t!(lang, "Cancel the task", "Cancelar la tarea"),
+                    t!(lang, "The task is cancelled and its work stays in its worktree until it closes", "La tarea se cancela y su trabajo queda en su worktree hasta que se cierre")),
+            ].into_iter().filter(|option| *specs || option.id != CHANGE_SPECS).collect(),
+            Self::ValidationStuck { .. } => vec![
+                option(VALIDATE_AGAIN, t!(lang, "Validate again", "Validar otra vez"),
+                    t!(lang, "A new validator runs what is still owed; if it cannot either, this card comes back",
+                        "Un validador nuevo ejecuta lo que falta; si tampoco puede, vuelve esta tarjeta")),
+                option(CANCEL, t!(lang, "Cancel the task", "Cancelar la tarea"),
+                    t!(lang, "The task is cancelled and its work stays in its worktree until it closes", "La tarea se cancela y su trabajo queda en su worktree hasta que se cierre")),
+            ],
         }
     }
 
     /// The card, in `lang`, from what the task records of it.
-    pub fn card(&self, title: &str, specs: &TaskSpecs, lang: Lang) -> CardSpec {
+    pub fn card(&self, task: &Task, lang: Lang) -> CardSpec {
         let need = |text: String| clip(&text, CardSpec::NEED_MAX);
         let why = |text: String| clip(&text, CardSpec::WHY_MAX);
+        let (title, specs): (&str, &TaskSpecs) = (&task.title, &task.specs);
         match self {
             Self::Amendment { id, .. } => {
                 let amendment = specs.amendment(id);
@@ -83,7 +120,52 @@ impl SpecCard {
                         "El autor de «{title}» la propone como decisión duradera del proyecto: las specs pueden apoyarse en ella cuando la aceptes.")))
                     .content(ContentKind::Document, body)
             }
+            Self::ValidationExhausted { round, .. } => {
+                CardSpec::new(CardKind::Decide, need(tf!(lang, "The validator sent back “{title}” three times: how does it go on?", "El validador devolvió «{title}» tres veces: ¿cómo sigue?")))
+                    .why(why(t!(lang, "A validator that did not write the work checked it against its specs, and these scenarios still fail. Alondra does not send it back a fourth time by itself.",
+                        "Un validador que no escribió el trabajo lo comprobó contra sus specs, y estos escenarios siguen fallando. Alondra no lo devuelve una cuarta vez por su cuenta.").to_owned()))
+                    .content(ContentKind::Report, failing(&task.validation, *round, lang))
+            }
+            Self::ValidationStuck { round, .. } => {
+                CardSpec::new(CardKind::Decide, need(tf!(lang, "“{title}” cannot be validated: how does it go on?", "«{title}» no se puede validar: ¿cómo sigue?")))
+                    .why(why(t!(lang, "Two validators in a row could not run what its specs still need. Nothing counts as passed or failed until it runs.",
+                        "Dos validadores seguidos no pudieron ejecutar lo que sus specs aún necesitan. Nada cuenta como aprobado ni fallido hasta que se ejecute.").to_owned()))
+                    .content(ContentKind::Diagnosis, failing(&task.validation, *round, lang))
+            }
         }
+    }
+}
+
+/// What a round left failing or not run, each with what the validator said of it, then its findings.
+pub fn failing(validation: &TaskValidation, number: u32, lang: Lang) -> String {
+    let Some(round) = validation.rounds.iter().find(|round| round.number == number) else { return String::new() };
+    let mut out = vec![];
+    for item in round.items.iter().filter(|item| matches!(item.state, ValidationState::Unmet | ValidationState::Incomplete | ValidationState::Running)) {
+        let what = match item.state {
+            ValidationState::Unmet => t!(lang, "fails", "falla"),
+            _ => t!(lang, "could not be run", "no se pudo ejecutar"),
+        };
+        let said = validation.record(&item.subject, item.kind, &item.inputs)
+            .and_then(|record| record.reasoning.as_deref().or(record.output.as_deref()))
+            .or(item.reason.as_deref())
+            .map(|said| format!(": {}", said.trim()))
+            .unwrap_or_default();
+        out.push(format!("- `{}` ({}) {what}{said}", item.subject, kind_name(item.kind, lang)));
+    }
+    if let Some(findings) = round.findings.as_deref().filter(|findings| !findings.trim().is_empty()) {
+        out.push(format!("\n**{}**\n\n{}", t!(lang, "The validator's findings", "Hallazgos del validador"), findings.trim()));
+    }
+    out.join("\n")
+}
+
+/// A kind of validation in plain words.
+pub fn kind_name(kind: crate::validation::ValidationKind, lang: Lang) -> &'static str {
+    use crate::validation::ValidationKind;
+    match kind {
+        ValidationKind::Suite => t!(lang, "test suite", "suite de tests"),
+        ValidationKind::Adequate => t!(lang, "its test checks it · judgment", "su test lo comprueba · juicio"),
+        ValidationKind::Judged => t!(lang, "judgment on its evidence", "juicio sobre su evidencia"),
+        ValidationKind::Reference => t!(lang, "reference still true · judgment", "referencia vigente · juicio"),
     }
 }
 

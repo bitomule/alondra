@@ -108,7 +108,9 @@ pub const INTERNAL_CODES: &[&str] = &[
     "close_outcome_required", "close_outcome_mismatch", "close_answer_required", "role_forbids_tool", "selection_pending", "stale_selection",
     "specs_disabled", "spec_settings_unreadable", "specs_unreadable", "specs_need_stages", "specs_approved", "plan_open", "no_specs",
     "plan_not_open", "stale_specs", "no_approved_specs", "spec_change_pending", "no_spec_change", "decisions_disabled", "decision_pending",
-    "specs_unwritten",
+    "specs_unwritten", "evidence_unknown_scenario", "validation_needs_stages", "handover_pending", "validation_exhausted", "worktree_unreadable",
+    "nothing_to_validate", "no_validation", "unknown_subject", "nothing_failed", "validation_stuck", "validation_open", "validation_unmet",
+    "validation_pending",
 ];
 
 impl Refusal {

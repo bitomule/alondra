@@ -2231,6 +2231,7 @@ impl DomainState {
         let generation = self.lifecycle(lifecycles, task)?.execution().map(|stamp| stamp.generation())
             .ok_or_else(|| DomainError::new("conflict", format!("Task {task} has no execution to lose")))?;
         self.sdk_execution(task, generation, lifecycles)?;
+        self.validator_lost(task);
         let cards: Vec<(InteractionId, WaitReason)> = self.lifecycle(lifecycles, task)?.cards().into_iter().map(|(card, reason)| (card.clone(), reason)).collect();
         if cards.iter().any(|(card, _)| self.interactions.get(card).is_some_and(retakes)) {
             return Ok(());
@@ -2344,6 +2345,8 @@ impl DomainState {
             LifecycleRecord::Answered { card: card.clone(), input, text: Some(text) }
         };
         self.decide(lifecycles, &task_id, record)?;
+        let generation = self.lifecycle(lifecycles, &task_id)?.generation();
+        self.validator_retaken(&task_id, generation);
         Ok(true)
     }
 

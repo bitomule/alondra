@@ -128,6 +128,9 @@ pub(super) fn build(id: &str, context: &RenderContext<'_>) -> Result<View, Build
     let card = from_item(item, context, true)?;
     let title = card.title.clone();
     let mut sections = vec![super::common::section("card", None, vec![Item::Card(card)])];
+    if let Some(specs) = super::spec_delivery::delivery_section(found, context) {
+        sections.push(specs);
+    }
     if let Some((title, points)) = plan_points(item, context) {
         sections.push(super::common::section("plan", Some(title), points));
     }
@@ -1008,7 +1011,7 @@ fn spec_change_card(interaction: &Interaction, domain: &DomainState, lang: Lang)
     let card = alondra_domain_model::spec_card::SpecCard::from_body(&interaction.body)?;
     let Scope::Task { task_id } = &interaction.scope else { return None };
     let task = domain.tasks.get(task_id)?;
-    Some(card.card(&task.title, &task.specs, lang))
+    Some(card.card(task, lang))
 }
 
 fn start_problem_of(interaction: &Interaction) -> Option<alondra_domain_model::StartProblem> {
@@ -2533,8 +2536,13 @@ fn plan_points(item: &InboxItem, context: &RenderContext<'_>) -> Option<(String,
                 EvidenceKind::Pr => (Icon::PullRequest, "PR", value),
                 EvidenceKind::File => (Icon::Document, t!(lang, "File", "Archivo"), value),
                 EvidenceKind::Link => (Icon::Notice, t!(lang, "Link", "Enlace"), value),
+                EvidenceKind::Scenario => (Icon::Check, t!(lang, "Scenario", "Escenario"), value),
             };
-            let mut child = bare(format!("plan-{}-{n}", mark.item), icon, format!("{label} · {}", clip(shown, 120)), evidence.detail.as_deref().map(|d| clip(d, 240)));
+            let detail = match evidence.kind {
+                EvidenceKind::Scenario => super::spec_delivery::evidence_state(interaction, value, context).or_else(|| evidence.detail.clone()),
+                _ => evidence.detail.clone(),
+            };
+            let mut child = bare(format!("plan-{}-{n}", mark.item), icon, format!("{label} · {}", clip(shown, 120)), detail.as_deref().map(|d| clip(d, 240)));
             child.depth = 1;
             child.link = match evidence.kind {
                 EvidenceKind::Commit => repository.as_ref().map(|base| Link::Url { url: format!("{base}/commit/{value}") }),

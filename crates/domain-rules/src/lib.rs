@@ -97,6 +97,8 @@ mod spec_tests;
 #[cfg(test)]
 mod specs_tests;
 #[cfg(test)]
+mod validation_tests;
+#[cfg(test)]
 mod stage_tests;
 #[cfg(test)]
 mod stall_tests;

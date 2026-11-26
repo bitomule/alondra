@@ -79,6 +79,7 @@ pub fn routes<H: DomainHost>() -> Router<Arc<H>> {
         ("/tasks/{id}/reopening", "POST"), ("/tasks/{id}/plan-review", "POST"), ("/tasks/{id}/stall-settlement", "POST"),
         ("/tasks/{id}/cleanup", "POST"), ("/tasks/{id}/post-merge-work", "PUT"), ("/tasks/{id}/mcp-wait", "PUT"), ("/tasks/{id}/task-wait", "PUT"),
         ("/tasks/{id}/specs", "POST"), ("/tasks/{id}/spec-changes", "POST"), ("/tasks/{id}/spec-amendments", "POST"), ("/tasks/{id}/decisions", "POST"),
+        ("/tasks/{id}/validation-ready", "POST"), ("/tasks/{id}/validations", "POST"), ("/tasks/{id}/validation-end", "POST"),
         ("/interactions/{id}/answers", "POST"), ("/interactions/{id}/settlement", "POST"),
         ("/interactions/{id}/withdrawal", "POST"), ("/interactions/{id}/clarification", "POST"),
         ("/interactions/{id}/subject", "PUT"),
@@ -660,6 +661,9 @@ pub(crate) fn resource_envelope(
         ("POST", p) if p.starts_with("/tasks/") && p.ends_with("/spec-changes") => ("request_spec_change", Some(("task_id", task?))),
         ("POST", p) if p.starts_with("/tasks/") && p.ends_with("/spec-amendments") => ("propose_amendment", Some(("task_id", task?))),
         ("POST", p) if p.starts_with("/tasks/") && p.ends_with("/decisions") => ("propose_decision", Some(("task_id", task?))),
+        ("POST", p) if p.starts_with("/tasks/") && p.ends_with("/validation-ready") => ("ready_for_validation", Some(("task_id", task?))),
+        ("POST", p) if p.starts_with("/tasks/") && p.ends_with("/validations") => ("record_validation", Some(("task_id", task?))),
+        ("POST", p) if p.starts_with("/tasks/") && p.ends_with("/validation-end") => ("end_validation", Some(("task_id", task?))),
         ("POST", p) if p.starts_with("/tasks/") && p.ends_with("/start") => ("start_task", Some(("task_id", task?))),
         ("POST", p) if p.starts_with("/tasks/") && p.ends_with("/documents") => ("create_document", Some(("task_id", task?))),
         ("PUT", p) if p.starts_with("/tasks/") && p.ends_with("/review") => {
@@ -893,7 +897,8 @@ async fn execute_command<H: DomainHost>(
     let work = host.api().runtime.work(host.domain(), Lane::Command).clone();
     let mut envelope = envelope;
     work.run(move || {
-        if let Err(refusal) = crate::spec_checks::stamp(host.domain(), &mut envelope.command) {
+        if let Err(refusal) = crate::spec_checks::stamp(host.domain(), &mut envelope.command)
+            .and_then(|()| crate::validation_checks::stamp(host.domain(), &mut envelope.command)) {
             return domain_error(refusal);
         }
         let home = host.home().to_owned();
@@ -1020,6 +1025,23 @@ async fn checked_producer_command<H: DomainHost>(
             return Err(refusal);
         }
     }
+    let mut delivered = None;
+    if let (Principal::Agent { .. }, Command::PresentResult { task_id, interaction_id, is_final: true, .. }) = (&principal, &envelope.command)
+        && host.domain().state().is_ok_and(|state| !state.interactions.contains_key(interaction_id))
+    {
+        let (checking, task, delivery) = (host.clone(), task_id.clone(), interaction_id.clone());
+        let gate = alondra_core::clock::spawn_blocking(move || {
+            let state = checking.domain().state().map_err(|_| crate::validation_checks::GateRefusal::Unreadable("the domain state could not be read".into()))?;
+            crate::validation_checks::gate(checking.domain(), &state, &task, &delivery)
+        });
+        let gated = steps.step("checking the task's validation", alondra_core::clock::timeout(git_within, gate)).await;
+        match gated {
+            Ok(Ok(Ok(snapshot))) => delivered = snapshot,
+            Ok(Ok(Err(refusal))) => return Err(refusal.error()),
+            Ok(Err(_)) => return Err(crate::validation_checks::GateRefusal::Unreadable("the check stopped before it finished".into()).error()),
+            Err(_) => return Err(crate::validation_checks::GateRefusal::Unreadable(format!("git did not answer within {} seconds", git_within.as_secs())).error()),
+        }
+    }
     if let (Principal::Agent { session_id, .. }, Command::PresentResult { task_id, interaction_id, targets, is_final: true, .. })
         = (&principal, &envelope.command)
         && let state = host.domain().state()
@@ -1068,6 +1090,7 @@ async fn checked_producer_command<H: DomainHost>(
         check_launch_plan(host.domain(), host.home(), &envelope.command)?;
         crate::launch_plans::stamp_project(host.domain(), host.home(), &mut envelope.command);
         crate::spec_checks::stamp(host.domain(), &mut envelope.command)?;
+        crate::validation_checks::stamp(host.domain(), &mut envelope.command)?;
         let kept = crate::result_files::keep(host.home(), &mut envelope.command)?;
         let executed = host.api().runtime.execute_bearer_answered(host.domain(), &token, &envelope, Box::new(|state| {
             reviewed.as_ref().map_or(Ok(()), |reviewed| reviewed.verify(state))
@@ -1077,6 +1100,9 @@ async fn checked_producer_command<H: DomainHost>(
         }
         match executed {
             Ok((outcome, replayed)) => {
+                if let (Some(validation), Command::PresentResult { task_id, interaction_id, .. }) = (delivered, &envelope.command) {
+                    crate::validation_checks::record_delivered(host.domain(), task_id, interaction_id, validation);
+                }
                 let mut answer = json!(outcome);
                 if replayed {
                     answer["replayed"] = json!(true);
@@ -1125,7 +1151,7 @@ pub(crate) fn encrypted_command_runtime(
             );
         }
     };
-    if let Err(refusal) = crate::spec_checks::stamp(domain, &mut envelope.command) {
+    if let Err(refusal) = crate::spec_checks::stamp(domain, &mut envelope.command).and_then(|()| crate::validation_checks::stamp(domain, &mut envelope.command)) {
         return Ok(json!({"status":422,"body":refusal}));
     }
     let result = domain.execute(

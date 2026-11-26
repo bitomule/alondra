@@ -121,7 +121,9 @@ pub enum Step {
     /// The node of `task` presents the pull requests as its result, and `text` when it says what it
     /// delivers in words. With `refused`, the daemon must turn the delivery down with that code, and
     /// nothing is presented.
-    Present { task: String, id: String, #[serde(default)] prs: Vec<u64>, #[serde(default)] text: Option<String>, body: String, #[serde(default)] refused: Option<String> },
+    Present { task: String, id: String, #[serde(default)] prs: Vec<u64>, #[serde(default)] text: Option<String>, body: String, #[serde(default)] refused: Option<String>,
+        /// Point 1 of the approved plan, marked done with each of these scenarios as its evidence.
+        #[serde(default)] scenarios: Vec<String> },
     /// The node of `task` asks the user `body` on the card `id`, to answer in writing, and waits
     /// on it: the turn that ends next ends on that question.
     Ask { task: String, id: String, title: String, body: String },
@@ -232,6 +234,17 @@ pub enum Step {
     EditSpec { task: String, item: String, fields: serde_json::Map<String, serde_json::Value> },
     /// The node of `task` asks for a change of its approved specs, as `request_spec_change` does.
     RequestSpecChange { task: String, reason: String },
+    /// The implementer of `task` says its work is ready to validate, as `ready_for_validation`
+    /// does; with `refused` the daemon must turn it down with that code.
+    ReadyForValidation { task: String, #[serde(default)] refused: Option<String> },
+    /// The validator of `task` records what one check found, as `record_validation` does.
+    RecordValidation { task: String, subject: String, check: String, verdict: String, #[serde(default)] refused: Option<String> },
+    /// The validator of `task` ends its round without delivering, as `end_validation` does.
+    EndValidation { task: String, findings: String },
+    /// The node of `task` writes, for everything the spec engine lists as not validated in its
+    /// worktree, the ledger entry `alondra spec run` and `alondra spec record` would write with
+    /// verdict met, and commits it with `message`.
+    SpecLedger { task: String, message: String },
     /// The node of `task` writes `files` in its worktree and commits them, with `message`; a file
     /// without text is removed.
     Commit { task: String, files: Vec<ProposedFile>, message: String },

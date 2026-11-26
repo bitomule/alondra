@@ -256,6 +256,9 @@ pub struct Task {
     /// since.
     #[serde(default, skip_serializing_if = "crate::TaskSpecs::is_default")]
     pub specs: crate::TaskSpecs,
+    /// Its validation: each round a validator checked its work in, and what it recorded.
+    #[serde(default, skip_serializing_if = "crate::TaskValidation::is_default")]
+    pub validation: crate::TaskValidation,
 }
 /// What a relaunch needs of the node that closed while it worked on a task.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

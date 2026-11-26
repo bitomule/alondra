@@ -10,6 +10,7 @@ root_binary(
     visibility = ["//visibility:public"],
     deps = [
         "//crates/e2e:alondra_e2e",
+        "//crates/spec-engine:spec_engine",
         "@crates//:anyhow",
         "@crates//:base64",
         "@crates//:clap",

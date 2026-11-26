@@ -1041,10 +1041,14 @@ truth = ["sqlite:task_stages"]
 - **Engine**: `provider_transition::pass` starts every due handover (`request_stage`: account and
   model through `select_account` with the role's selection) as a `Kind::Stage` selection change
   (M-ENGINE-7). While the task owes a role its current execution does not play
-  (`owes_role_change`), no input reaches that execution and nothing relaunches or retakes it.
+  (`owes_role_change`), no input reaches that execution and nothing relaunches or retakes it. A
+  handover to a new validator (`ValidatorRetry`) is owed by the validator that works too
+  (`StageHandover::owed_by`).
 - **Roles and tools**: `ExecutionRole::allows(RoleTool)`. The author plans and never registers,
   presents or declares work after a PR; the implementer does all but `record_verdict`; the
-  validator never plans, registers a PR or records a verdict. A refused call is
+  validator never plans, registers a PR or records a verdict. Only the implementer says its work is
+  ready (`ready_for_validation`); only the validator records a validation or ends its round
+  (`record_validation`, `end_validation`, M-LIFE-17). A refused call is
   `role_forbids_tool` with the tool as subject and what the role does instead; a plan its role may
   not send, or the author's plan after its approval, is denied by policy without a card.
 - **Persistence and restart**: the whole record is one JSON row of `task_stages`, written by the
@@ -1102,6 +1106,79 @@ transitions = ["Requested -> Proposed", "Proposed -> Approved", "Proposed -> Rej
 - **Persistence and restart**: the whole record is one JSON row of `task_specs`, written by the
   commit that changes it. A write cut by a restart is done again on the next pass: the files are
   written whole, and only their fingerprints clear them.
+
+### M-LIFE-17 · Rounds of validation (`ValidationRound`, added by the validation phase)
+
+```toml state-machine
+id = "M-LIFE-17"
+code = ["crates/domain-model/src/validation.rs::TaskValidation", "crates/domain-model/src/rules/validation_rules.rs::ready_for_validation", "crates/domain-model/src/rules/validation_rules.rs::end_validation", "crates/domain-model/src/rules/validation_rules.rs::settle_validation_card", "crates/daemon-server/src/validation_checks.rs::gate_with"]
+truth = ["sqlite:task_validations"]
+states = "crates/domain-model/src/validation.rs::RoundState"
+variants = ["Requested", "Validating", "Interrupted", "Failed", "Delivered"]
+terminals = ["Failed", "Delivered"]
+initial = ["Requested"]
+transitions = ["Requested -> Validating", "Validating -> Interrupted", "Interrupted -> Validating", "Validating -> Failed", "Validating -> Delivered", "Delivered -> Validating"]
+```
+
+- **Kind**: explicit, product. In a project with specs, the implementer of a task in stages never
+  delivers work the spec engine still lists as not validated: it says the work is ready, and a new
+  execution in the validator's role checks it (`docs/architecture/specs.md`, "Validation of a
+  task"). A round is one such check of one commit.
+- **Components**: `number` × `head` (the commit it validates; only the ledger may change between it
+  and the delivered commit) × `items` (each validation the engine listed there, M-LIFE-18) × `scope`
+  (files the branch changed outside the task's components) × `state` × `generation` (its validator's
+  execution) × `findings` × `retried`. The task keeps `records` (what validators recorded, by
+  subject, kind and fingerprint), `failed` (rounds sent back in a row), `exhausted` (the card that
+  asks the user) and `delivered` (what each validated delivery showed of its specs).
+- **Moves**:
+
+| From | Event [guard] | Result |
+|---|---|---|
+| no open round | `ReadyForValidation` [the implementer of a staged task, no handover, no open change of specs, no decision card, a commit, items not empty] | `Requested`; handover to `Validator` (`ReadyForValidation`) |
+| `Requested`, `Interrupted` | a run in the validator's role is admitted, or its host is taken over | `Validating` with its generation; incomplete items owed again |
+| `Validating` | the validator's host is lost | `Interrupted`; what it owed is `Incomplete`, what it recorded stays; the lost host's own path follows |
+| `Validating` | `EndValidation` [an item `Unmet`] | `Failed`; `failed + 1`; handover to `Implementer` (`ValidationFailed`), or at the third the `system:spec_change` card `ValidationExhausted` |
+| `Validating` | `EndValidation` [no item `Unmet`, some owed] | `Interrupted`; handover to a new `Validator` (`ValidatorRetry`, which a validator owes too), or, already retried, the card `ValidationStuck` |
+| `Validating` | `PresentResult` final by the validator [no item `Unmet` or owed] | `Delivered` |
+| `Delivered` | the delivery is withdrawn because its pull request moved | `Validating` on the new head; the validator is told to validate again what changed |
+| `Delivered` | the user asks for changes, or the PR has conflicts | handover to `Implementer` (`DeliveryReturned`) |
+| a decision card | the user answers `stronger` / `change_specs` / `validate_again` / `cancel` | the implementer takes the author's selection / an amendment `Requested` for an author / a new validator / the task is cancelled; `failed = 0` |
+
+- **Gate**: a final delivery of a staged task in a project with specs is read on its commit before
+  the domain takes it (`daemon-server/src/validation_checks.rs::gate_with`, within the delivery
+  review's git limit). The implementer's is refused with `validation_required` while the engine
+  lists anything; the validator's with `validation_pending` (not clean), `spec_change_open`,
+  `ledger_unrecorded` (a ledger entry the branch changed that no validator recorded with that
+  fingerprint and verdict) or `changed_after_validation` (anything but the ledger changed after
+  `head`); `worktree_unreadable` when git cannot read it in time. `specs_differ` comes first, from
+  M-LIFE-16.
+- **Persistence and restart**: the whole record is one JSON row of `task_validations`, written by
+  the commit that changes it; a task without a row was never validated. A restart keeps every round
+  and record; a validator whose host does not come back leaves its round `Interrupted`.
+
+### M-LIFE-18 · One validation of a round (`RoundItem`, added by the validation phase)
+
+```toml state-machine
+id = "M-LIFE-18"
+code = ["crates/domain-model/src/validation.rs::RoundItem", "crates/domain-model/src/rules/validation_rules.rs::record_validation", "crates/daemon-server/src/validation_checks.rs::stamp_with"]
+truth = ["sqlite:task_validations"]
+states = "crates/domain-model/src/validation.rs::ValidationState"
+variants = ["Running", "Met", "Unmet", "Incomplete"]
+terminals = ["Met", "Unmet"]
+initial = ["Running"]
+transitions = ["Running -> Met", "Running -> Unmet", "Running -> Incomplete", "Incomplete -> Running", "Incomplete -> Met", "Incomplete -> Unmet", "Met -> Unmet", "Unmet -> Met", "Met -> Incomplete", "Unmet -> Incomplete"]
+```
+
+- **Kind**: explicit, product. One thing the spec engine listed as not validated on the round's
+  commit: a suite, that a scenario's tests check it (`adequate`), a judgment scenario
+  (`judged`) or a reference section, at the fingerprint Alondra read of that commit.
+- **Moves**: `RecordValidation` by the round's validator [the round `Validating`; Alondra stamps
+  `inputs` from the commit; a judgment has its reasoning, `adequate` met its nearest wrong
+  behaviour; incomplete its reason] sets `Met`, `Unmet` or `Incomplete` on the item of that subject,
+  kind and fingerprint, and keeps the record; a validator that ends before it records leaves its
+  `Running` items `Incomplete`, and the next validator of the round owes them again (`Running`).
+  `Incomplete` never counts as passed or failed.
+- **Persistence and restart**: inside its round's row of `task_validations`.
 
 ## Cards, plans, documents and requests (`CARDS`)
 

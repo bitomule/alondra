@@ -93,6 +93,12 @@ impl Files for Commit {
     }
 }
 
+/// The full sha of the commit `revision` names at `root`.
+fn resolved(root: &Path, revision: &str) -> Result<String, String> {
+    let found = git(root, &["rev-parse", "--verify", "--quiet", &format!("{revision}^{{commit}}")])?;
+    Ok(String::from_utf8_lossy(&found).trim().to_owned())
+}
+
 /// Where the branch of the worktree at `root` leaves the remote's default branch.
 fn fork_point(root: &Path) -> Result<String, String> {
     let base = git(root, &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]).ok()
@@ -166,6 +172,32 @@ impl SpecWorktrees for GitSpecWorktrees {
 
     fn base(&self, root: &Path) -> Result<SpecSource, String> {
         Ok(Box::new(Commit::of(root, &fork_point(root)?)?))
+    }
+
+    fn head_commit(&self, root: &Path) -> Result<String, String> {
+        resolved(root, "HEAD")
+    }
+
+    fn commit(&self, root: &Path, commit: &str) -> Result<SpecSource, String> {
+        Ok(Box::new(Commit::of(root, commit)?))
+    }
+
+    fn base_commit(&self, root: &Path) -> Result<String, String> {
+        fork_point(root)
+    }
+
+    fn changed(&self, root: &Path, from: &str, to: &str) -> Result<Vec<String>, String> {
+        let (from, to) = (resolved(root, from)?, resolved(root, to)?);
+        Ok(names(git(root, &["diff", "--name-only", "-z", "--no-renames", &from, &to])?))
+    }
+
+    fn uncommitted(&self, root: &Path) -> Result<Vec<String>, String> {
+        let status = git(root, &["status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames"])?;
+        let mut paths: Vec<String> = String::from_utf8_lossy(&status).split('\0')
+            .filter_map(|entry| entry.get(3..)).filter(|path| !path.is_empty()).map(str::to_owned).collect();
+        paths.sort();
+        paths.dedup();
+        Ok(paths)
     }
 
     fn settings(&self, root: &Path) -> Result<Option<Vec<u8>>, String> {
@@ -242,6 +274,34 @@ mod tests {
         assert_eq!(found, [specs::SpecDrift { path: "specs/billing/boundary.toml".into(), approved: false }]);
         let approved: SpecFiles = [("specs/billing/boundary.toml".to_owned(), Some(BOUNDARY.replace("billing/**", "billing/src/**")))].into();
         assert_eq!(specs::drift(&head, &base, &approved).unwrap(), [], "the change the user approved, as approved");
+    }
+
+    #[test]
+    fn a_validation_reads_the_commits_the_paths_between_them_and_what_no_commit_holds_yet() {
+        let dir = Directory::new();
+        std::fs::create_dir_all(&*dir).unwrap();
+        let root = dir.canonicalize().unwrap();
+        run(&root, &["init", "-q", "-b", "main"]);
+        std::fs::write(root.join("alondra.toml"), SETTINGS).unwrap();
+        std::fs::write(root.join(".gitignore"), "target/\n").unwrap();
+        run(&root, &["add", "-A"]);
+        run(&root, &["commit", "-q", "-m", "Start"]);
+        let port = GitSpecWorktrees;
+        let first = port.head_commit(&root).unwrap();
+        assert!(alondra_domain_model::is_commit_sha(&first), "{first}");
+        std::fs::create_dir_all(root.join("specs/ledger")).unwrap();
+        std::fs::write(root.join("specs/ledger/unit.toml"), "inputs = \"sha256:0\"\n").unwrap();
+        std::fs::create_dir_all(root.join("target")).unwrap();
+        std::fs::write(root.join("target/out"), "built").unwrap();
+        assert_eq!(port.uncommitted(&root).unwrap(), ["specs/ledger/unit.toml"], "a new file counts, an ignored one never");
+        run(&root, &["add", "-A"]);
+        run(&root, &["commit", "-q", "-m", "Ledger"]);
+        std::fs::write(root.join("alondra.toml"), "changed").unwrap();
+        assert_eq!(port.uncommitted(&root).unwrap(), ["alondra.toml"]);
+        let second = port.head_commit(&root).unwrap();
+        assert_eq!(port.changed(&root, &first, &second).unwrap(), ["specs/ledger/unit.toml"]);
+        assert_eq!(port.commit(&root, &first).unwrap().read("specs/ledger/unit.toml"), None, "the first commit has no ledger");
+        assert!(port.changed(&root, &first, "not-a-commit").is_err());
     }
 
     #[test]

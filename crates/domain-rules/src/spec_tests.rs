@@ -10,14 +10,14 @@ use alondra_core::model_selection::{ModelKey, ModelProfile, ModelSelection, Pend
 use serde_json::json;
 use std::collections::BTreeMap;
 
-const PARTIAL_PATH: &str = "specs/billing/partial.feature";
+pub(super) const PARTIAL_PATH: &str = "specs/billing/partial.feature";
 const PARTIAL: &str = "@spec:billing.partial\nFeature: Partial refunds\n  Part of an order comes back.\n\n  @id:part\n  Scenario: Part of an order\n    Given a paid order of 30 EUR\n    When 10 EUR are refunded\n    Then the customer receives 10 EUR\n";
 
 fn staged(s: &mut DomainState, staged: bool) {
     let selections = if staged { TaskStages::role_selections(&TaskSelection::automatic(ModelProfile::Implementation)) } else { BTreeMap::new() };
     must(s, Actor::System, Command::RecordTaskStages { task_id: "t".into(), staged, reason: "Large".into(), selections });
 }
-fn admit(s: &mut DomainState, agent: &str, generation: u64) {
+pub(super) fn admit(s: &mut DomainState, agent: &str, generation: u64) {
     if !s.agents.contains_key(&AgentId::from(agent)) {
         must(s, Actor::System, Command::RegisterAgent { agent_id: agent.into(), name: agent.into(), at: 0 });
     }
@@ -52,7 +52,7 @@ fn plan_card() -> Command {
 fn plan_id() -> InteractionId {
     decision_card_id(&"t".into(), 1, 7)
 }
-fn answer(s: &mut DomainState, card: InteractionId, option: &str, words: Option<&str>) -> Result<CommandOutcome, DomainError> {
+pub(super) fn answer(s: &mut DomainState, card: InteractionId, option: &str, words: Option<&str>) -> Result<CommandOutcome, DomainError> {
     let inputs = words.map(|words| BTreeMap::from([(ANSWER_TEXT.to_owned(), InputValue::Text(words.into()))])).unwrap_or_default();
     exec(s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: card, option_id: option.into(), inputs })
 }
@@ -64,7 +64,7 @@ fn pending() -> PendingTaskSelection {
         model: ModelSelection { model: ModelKey { provider: Provider::Claude, model: "sonnet".into() }, reasoning_effort: None, catalog_revision: "catalog".into() },
         reason: "The next role takes the task over".into() }
 }
-fn begin(s: &mut DomainState, transition: &str) -> Result<CommandOutcome, DomainError> {
+pub(super) fn begin(s: &mut DomainState, transition: &str) -> Result<CommandOutcome, DomainError> {
     let expected_selection = s.task_selection_stamp(&"t".into()).unwrap();
     exec(s, Actor::System, Command::BeginStageHandover { task_id: "t".into(), expected_selection, transition: transition.into(), pending: pending() })
 }
@@ -72,7 +72,7 @@ fn written(s: &DomainState) -> Command {
     let due = specs_of(s).due();
     Command::RecordSpecsWritten { task_id: "t".into(), written: due.iter().map(|(path, text)| (path.clone(), specs::fingerprint(text.as_deref()))).collect() }
 }
-fn told(s: &DomainState) -> Vec<String> {
+pub(super) fn told(s: &DomainState) -> Vec<String> {
     s.lifecycle_journal[&TaskId::from("t")].iter().filter_map(|record| match record {
         LifecycleRecord::Told { text: Some(text), .. } => Some(text.clone()),
         _ => None,
@@ -87,7 +87,7 @@ fn approved() -> DomainState {
     s
 }
 /// `approved`, with the approved files written and the implementer at work.
-fn implementing() -> DomainState {
+pub(super) fn implementing() -> DomainState {
     let mut s = approved();
     must(&mut s, Actor::System, Command::RecordDecisionSettled { task_id: "t".into(), generation: 1, epoch: 7 });
     let record = written(&s);

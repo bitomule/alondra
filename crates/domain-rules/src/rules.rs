@@ -29,11 +29,12 @@ mod pr_identity;
 mod scheduled_launch;
 mod snooze;
 mod spec_rules;
+mod validation_rules;
 #[path = "stage_rules.rs"]
 mod stage_rules;
 mod stall;
 
-pub(crate) use self::{account_login::*, account_settings::*, claude_access::*, compaction::*, decisions::*, effect::*, mcp::*, mcp_wait::*, node_machine::*, open_pr::*, plan_review::*, pr_identity::*, scheduled_launch::*, snooze::*, spec_rules::*, stage_rules::*, stall::*};
+pub(crate) use self::{account_login::*, account_settings::*, claude_access::*, compaction::*, decisions::*, effect::*, mcp::*, mcp_wait::*, node_machine::*, open_pr::*, plan_review::*, pr_identity::*, scheduled_launch::*, snooze::*, spec_rules::*, stage_rules::*, stall::*, validation_rules::*};
 
 type Result<T, E = DomainError> = std::result::Result<T, E>;
 
@@ -187,6 +188,9 @@ pub(crate) fn checklist_marks_cover_the_plan(domain: &DomainState, task_id: &Tas
                 }
                 EvidenceKind::Pr if !domain.task(task_id)?.pr_ids().any(|pr| pr.0 == value) => {
                     return refuse("evidence_unknown_pr", "checklist", &format!("point {point}: {value} is not this task's registered PR: cite its pr_id"));
+                }
+                EvidenceKind::Scenario if !task_scenario(domain, task_id, value) => {
+                    return refuse("evidence_unknown_scenario", "checklist", &format!("point {point}: {value} is not a scenario of this task's specs: cite it as <spec>/<scenario>"));
                 }
                 _ => {}
             }
@@ -1062,6 +1066,8 @@ pub(crate) fn withdraw_deliveries_behind_their_targets(domain: &mut DomainState,
         })
         .collect();
     for (task_id, delivery, notice, sent_back) in behind {
+        let moved = domain.tasks.get(&task_id).and_then(|task| domain.open_prs(task).next()).map(|pr| pr.head.clone());
+        let notice = moved.and_then(|head| validated_head_moved(domain, &task_id, &head)).unwrap_or(notice);
         domain.invalidate(&task_id);
         domain.retire(&delivery);
         let working = matches!(domain.lifecycle(lifecycles, &task_id)?.activity(), alondra_domain::ActivityView::Working);
@@ -2098,7 +2104,7 @@ pub(crate) fn apply(
                     documents: BTreeMap::new(),
                     archived: false,
                     model: None,
-                    waiting_for_tasks: Default::default(), ended_task_waits: Default::default(), delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: *priority, paused_in_queue: None, ending: None, stalls: 0, stall_closing: None, open_pr: None, released: None, stages: Default::default(), specs: Default::default(), continues: continues.clone(), worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, move_refused: None, account: None, allowed: Default::default(), project: launch.as_ref().and_then(|launch| launch.project.clone()),
+                    waiting_for_tasks: Default::default(), ended_task_waits: Default::default(), delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: *priority, paused_in_queue: None, ending: None, stalls: 0, stall_closing: None, open_pr: None, released: None, stages: Default::default(), specs: Default::default(), validation: Default::default(), continues: continues.clone(), worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, move_refused: None, account: None, allowed: Default::default(), project: launch.as_ref().and_then(|launch| launch.project.clone()),
                 },
             );
             domain.dependency_graph()?;
@@ -2849,6 +2855,7 @@ pub(crate) fn apply(
             }
             settle_start_problem(domain, actor, interaction_id, option_id, effects, created, lifecycles)?;
             settle_spec_card(domain, interaction_id, option_id, written.as_deref(), lifecycles)?;
+            settle_validation_card(domain, actor, interaction_id, option_id, written.as_deref(), effects, created, lifecycles)?;
             settle_post_merge_problem(domain, interaction_id, option_id, lifecycles)?;
             settle_plan_review_problem(domain, interaction_id, option_id, lifecycles)?;
             if matches!(actor, Actor::User { .. }) {
@@ -3329,6 +3336,9 @@ pub(crate) fn apply(
                 return refuse("pr_missing", "targets", &prs_missing_from_delivery(&missing));
             }
             checklist_marks_cover_the_plan(domain, task_id, *is_final, checklist, attachments, targets)?;
+            if *is_final {
+                validation_allows_delivery(domain, task_id)?;
+            }
             if let Some(plan) = &card.plan {
                 if !*is_final || *nothing_to_review || targets.iter().any(|t| matches!(t, DeliveryTarget::PullRequest { .. })) {
                     return refuse("invalid_input", "plan",
@@ -3383,6 +3393,7 @@ pub(crate) fn apply(
                 }
                 domain.node_has_run(task_id, lifecycles)?;
                 domain.decide(lifecycles, task_id, LifecycleRecord::Presented { delivery: interaction_id.clone() })?;
+                validator_delivered(domain, task_id);
                 if let Some(notice) = replacement_notice {
                     domain.consume_replacement_notice(task_id, notice, lifecycles)?;
                 }
@@ -3454,6 +3465,9 @@ pub(crate) fn apply(
                 });
             }
             p.revision = domain.revision + 1;
+            if matches!(instruction, Instruction::Changes | Instruction::Conflicts) {
+                return_to_implementer(domain, &task);
+            }
             notify(domain, &task, Some(presentation_id.clone()), &instruction.message(body), effects)?;
         }
         Command::AcceptDelivery {
@@ -3998,6 +4012,7 @@ pub(crate) fn apply(
             system(actor)?;
             domain.task(task_id)?;
             domain.record_host_retaken(task_id, *generation, lifecycles)?;
+            domain.validator_retaken(task_id, *generation);
         }
         Command::RecordTaskStages { task_id, staged, reason, selections } => {
             record_task_stages(domain, actor, task_id, *staged, reason, selections)?;
@@ -4028,6 +4043,19 @@ pub(crate) fn apply(
         }
         Command::ProposeDecision { task_id, decision, files, check } => {
             propose_decision(domain, actor, task_id, decision, files, check, effects, created)?;
+        }
+        Command::ReadyForValidation { task_id, head, items, scope } => {
+            ready_for_validation(domain, actor, task_id, head, items, scope, lifecycles)?;
+        }
+        Command::RecordValidation { task_id, subject, check, verdict, reasoning, nearest_wrong, output, evidence, inputs } => {
+            let record = Recorded { subject, kind: *check, verdict: *verdict, reasoning: reasoning.as_deref(), nearest_wrong: nearest_wrong.as_deref(), output: output.as_deref(), evidence, inputs };
+            record_validation(domain, actor, task_id, record)?;
+        }
+        Command::EndValidation { task_id, findings } => {
+            end_validation(domain, actor, task_id, findings, effects, created, lifecycles)?;
+        }
+        Command::RecordDeliveredValidation { task_id, validation } => {
+            record_delivered_validation(domain, actor, task_id, validation)?;
         }
         Command::AbortTaskSelection { task_id, selection, refused } => {
             system(actor)?;

@@ -938,6 +938,48 @@ pub enum Command {
         #[serde(default)]
         check: crate::SpecCheck,
     },
+    /// The implementer of a task in stages says its work is ready to validate. Alondra fills
+    /// `head` (the commit of its worktree), `items` (what the spec engine lists as not validated on
+    /// it, at the fingerprints Alondra read) and `scope` (files the branch changed outside the
+    /// task's components); whatever the agent sends there is replaced.
+    ReadyForValidation {
+        task_id: TaskId,
+        #[serde(default)]
+        head: String,
+        #[serde(default)]
+        items: Vec<crate::ValidationItem>,
+        #[serde(default)]
+        scope: Vec<String>,
+    },
+    /// The validator records what one validation found. Alondra fills `inputs` with the
+    /// fingerprint it reads of the subject on the commit the round validates.
+    RecordValidation {
+        task_id: TaskId,
+        subject: String,
+        check: crate::ValidationKind,
+        verdict: crate::ValidationVerdict,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reasoning: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        nearest_wrong: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        evidence: Vec<String>,
+        #[serde(default)]
+        inputs: String,
+    },
+    /// The validator ends its round without delivering: what failed goes back to the implementer,
+    /// what it could not run to a new validator.
+    EndValidation {
+        task_id: TaskId,
+        findings: String,
+    },
+    /// What a validator's delivery shows of its specs, read by Alondra from the delivered commit.
+    RecordDeliveredValidation {
+        task_id: TaskId,
+        validation: crate::DeliveredValidation,
+    },
     /// The change of role `transition` could not start the next execution: `refused` when the
     /// same start is refused however often it is tried, which waits for the user. No `transition`
     /// names a change that could not even start.
