@@ -1604,6 +1604,29 @@ checks:
   # One check per crate: `bazel test //crates/<crate>/...` also builds and lints every target of the
   # crate, and its paths are the crate directories it depends on, so a change reopens exactly the
   # crates that link it.
+  crate-spec-engine:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - ".bazelversion"
+      - "Cargo.toml"
+      - "MODULE.bazel"
+      - "clippy.toml"
+      - "crates/spec-engine/**"
+      - "BUILD.bazel"
+      - "alondra.toml"
+      - "specs/**"
+      - "docs/decisions/**"
+      - "docs/reference/**"
+      - "tools/public_surface.py"
+      - "bazel/rules/BUILD.bazel"
+      - "bazel/rules/rust_test.bzl"
+      - "bazel/rules/tree.bzl"
+      - "bazel/rules/rust_sources.bzl"
+    with:
+      targets:
+        - //crates/spec-engine/...
+
   crate-foundation:
     uses: bazel/test
     paths:
@@ -2119,6 +2142,22 @@ checks:
     with:
       targets:
         - //tools:module_cycles_test
+
+  public-surface:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - ".bazelversion"
+      - "MODULE.bazel"
+      - "tools/BUILD.bazel"
+      - "tools/public_surface.py"
+      - "tools/tests/test_public_surface.py"
+      - "bazel/rules/BUILD.bazel"
+      - "bazel/rules/rust_test.bzl"
+      - "bazel/rules/tree.bzl"
+    with:
+      targets:
+        - //tools:public_surface_test
 
   sandbox-accounts:
     uses: bazel/test

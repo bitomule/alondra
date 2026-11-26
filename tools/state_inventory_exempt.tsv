@@ -9,8 +9,10 @@ enum	crates/domain-rules/src/mcp.rs::McpStatus	how Claude reports an MCP server,
 enum	crates/engine-sdk/src/sdk_owner.rs::NativeRecoveryStatus	result of one lookup of a recoverable native session; holds no state
 file	antigravity-cli/settings.json	the user's own Antigravity settings, linked read-only from ~/.gemini into a named account's folder; Alondra never owns its state
 file	config/mcp_config.json	the user's own Antigravity MCP servers, linked read-only from ~/.gemini into a named account's folder; Alondra never owns its state
+file	alondra.toml	settings a repository commits to turn specs on, read through the caller of the spec engine; not state of the Alondra home
 file	announced.json	cache of the relay announcement kept inside the report folder for when the relay cannot be asked; no lifecycle
 file	auth.json	a provider's own credential file (Codex profile) and its test fixture; Alondra only checks it exists or moves it, never owns its state
+file	boundary.toml	boundary a repository commits for a component in its specs folder, read through the caller of the spec engine; not state of the Alondra home
 file	capture.json	file a test fixture host writes to record what it received; not production state
 file	closed-task-nodes.json	retired file: current code only deletes it at startup, the domain keeps this in task_released_nodes
 file	antigravity-backend.json	alternate backend description a test or sandbox installs; the daemon only reads it

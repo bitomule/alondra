@@ -25,6 +25,7 @@ mod service_pair;
 mod service_setup;
 mod setup;
 mod setup_projects;
+pub mod spec;
 mod state;
 mod update;
 mod version;

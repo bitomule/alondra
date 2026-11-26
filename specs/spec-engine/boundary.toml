@@ -1,0 +1,20 @@
+id = "spec-engine"
+owns = ["crates/spec-engine/**"]
+regenerates = ["crates/spec-engine/src/**"]
+inputs = ["tools/public_surface.py"]
+depends_on = []
+data = ["specs/ledger/**"]
+fixtures = ["crates/spec-engine/fixtures/**"]
+surface = "specs/spec-engine/surface.txt"
+
+[[suite]]
+id = "unit"
+run = ["bazelisk", "test", "//crates/spec-engine:spec_engine_test"]
+tests = ["crates/spec-engine/tests/**/*.rs"]
+timeout_minutes = 30
+
+[[suite]]
+id = "contract"
+run = ["bazelisk", "test", "//crates/spec-engine:contract_test"]
+tests = ["crates/spec-engine/tests/contract_test.py"]
+timeout_minutes = 10

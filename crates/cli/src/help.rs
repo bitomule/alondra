@@ -3,11 +3,17 @@ use clap::{Arg, ArgAction, Command};
 /// clap writes "Usage", "Commands", "Arguments", "Options", "Print help" and the `help`
 /// subcommand in English; this gives every command those texts in the user's language.
 pub fn localized(cmd: Command) -> Command {
+    let cmd = translated(cmd);
+    let root = root_template(&cmd);
+    cmd.help_template(root)
+}
+
+/// The same texts for a command that lists its subcommands itself, without the groups of `alondra`.
+pub fn translated(cmd: Command) -> Command {
     let mut cmd = localize(cmd);
     cmd.build();
     localize_help_subcommands(&mut cmd);
-    let root = root_template(&cmd);
-    cmd.help_template(root)
+    cmd
 }
 
 /// The groups of the top-level help, in order; the rest is under `alondra help more`.
@@ -19,7 +25,7 @@ fn groups() -> [(&'static str, &'static [&'static str]); 3] {
     ]
 }
 
-const MORE: &[&str] = &["cleanup", "files", "handover", "metrics", "observe", "state", "delivery", "orchestrator", "report", "report-wait"];
+const MORE: &[&str] = &["cleanup", "files", "handover", "metrics", "observe", "state", "delivery", "orchestrator", "report", "report-wait", "spec"];
 
 /// `name  about  (verb · verb)` for each command, aligned.
 fn lines(cmd: &Command, names: &[&str]) -> String {
@@ -151,7 +157,7 @@ mod tests {
         assert_eq!(named, visible);
         let help = cmd.clone().render_help().to_string();
         assert!(help.contains("  config       Show or change settings  (list · get · set · unset)"), "{help}");
-        assert!(help.contains("cleanup · files · handover · metrics · observe · state · delivery · orchestrator · report · report-wait      (alondra help more)"), "{help}");
+        assert!(help.contains("cleanup · files · handover · metrics · observe · state · delivery · orchestrator · report · report-wait · spec      (alondra help more)"), "{help}");
         let more = more(&cmd);
         assert!(more.contains("  orchestrator Stop, acknowledge or retry an orchestrator run  (cancel · acknowledge · retry)"), "{more}");
         assert!(!more.contains("doctor"), "{more}");

@@ -138,6 +138,7 @@ crates/cli-tui/src/tui/bindings.rs	_ => match hint.to_ascii_lowercase().as_str()
 crates/cli-tui/src/tui/inbox.rs	match hint.to_ascii_lowercase().as_str() {	own-grammar	key hint grammar
 crates/cli-tui/src/tui/view_render.rs	key.strip_prefix(SECTION_HEADER)	own-grammar	view key grammar
 crates/daemon-engine/src/claude_access.rs	command_id: format!("probe-{provider:?}-{hold:?}{named}-{}", state.state().revision).to_lowercase().as_str().into(),	own-grammar	id built by Alondra
+crates/spec-engine/src/reference.rs	if !line.trim_start().starts_with(COMMENT_OPENER) {	format	section comment of a reference document, a format docs/architecture/specs.md defines
 crates/store-sqlite/src/lib.rs	ensure!(selection.policy_revision == format!("{}:{}",state.account_config_version,state.model_profiles_version), "The account/model policy changed before the batch claim");	own-grammar	policy revision Alondra composes
 crates/daemon-support/src/hook_text.rs	tool.filter(|t| t.starts_with(alondra_core::activity::ALONDRA_TOOLS))?;	own-grammar	MCP tool name token mcp__<server>__<tool>
 crates/engine-orchestrator/src/orchestrator_provider.rs	if policy_revision != format!("{}:{}",read.state().account_config_version,read.state().model_profiles_version) {	own-grammar	policy revision Alondra composes

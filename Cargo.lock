@@ -138,6 +138,7 @@ dependencies = [
  "alondra-domain-rules",
  "alondra-e2e",
  "alondra-host",
+ "alondra-spec-engine",
  "alondra-view-model",
  "alondra-views",
  "anyhow",
@@ -962,6 +963,18 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "alondra-spec-engine"
+version = "0.3.69"
+dependencies = [
+ "proptest",
+ "quick-xml",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "toml",
 ]
 
 [[package]]

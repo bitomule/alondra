@@ -1,0 +1,14 @@
+format = 1
+
+[specs]
+enabled = true
+committed = true
+dir = "specs"
+
+[decisions]
+enabled = true
+dir = "docs/decisions"
+
+[reference]
+enabled = true
+dir = "docs/reference"

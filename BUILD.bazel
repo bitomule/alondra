@@ -39,6 +39,18 @@ exports_files(
 )
 
 exports_files(
+    ["alondra.toml", "specs/spec-engine/surface.txt"],
+    visibility = ["//crates/spec-engine:__pkg__"],
+)
+
+# What `alondra.toml` names: the specs with their ledger, the decisions and the reference prose.
+filegroup(
+    name = "spec_files",
+    srcs = glob(["specs/**", "docs/decisions/**", "docs/reference/**"]),
+    visibility = ["//crates/spec-engine:__pkg__"],
+)
+
+exports_files(
     ["Makefile"],
     visibility = ["//crates/alondra:__pkg__", "//deploy/apple:__pkg__", "//tools:__pkg__"],
 )
