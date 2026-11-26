@@ -62,9 +62,25 @@ async fn look(domain: &Arc<DomainRuntime>) -> Result<Phase, DomainError> {
 }
 
 fn stage_steps(slice: &Slice) -> Vec<String> {
-    let observer = slice.observer();
+    stage_steps_in(&slice.database)
+}
+
+fn stage_steps_in(database: &std::path::Path) -> Vec<String> {
+    let observer = rusqlite::Connection::open(database).unwrap();
     let mut statement = observer.prepare("SELECT phase FROM provider_transition_steps WHERE task_id=?1 ORDER BY sequence").unwrap();
     statement.query_map([TASK], |row| row.get(0)).unwrap().map(Result::unwrap).collect()
+}
+
+/// Whether the change of role is done as the daemon sees it. The daemon reads the journal under the
+/// writer lock it holds from a commit until its publication; a connection of its own sees the
+/// commit before the domain publishes it. So the change is done once its last step is committed
+/// and the published state holds every command committed with it.
+fn handed(database: &std::path::Path, domain: &DomainRuntime) -> bool {
+    let published = domain.read().state().revision;
+    let (done, committed): (bool, Option<i64>) = rusqlite::Connection::open(database).unwrap().query_row(
+        "SELECT EXISTS(SELECT 1 FROM provider_transition_steps WHERE task_id=?1 AND phase='done'), (SELECT max(revision) FROM command_audit)",
+        [TASK], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+    done && committed.is_none_or(|committed| u64::try_from(committed).unwrap() <= published)
 }
 
 fn admissions(domain: &DomainRuntime) -> usize {
@@ -103,8 +119,16 @@ struct Changes {
 
 impl Changes {
     fn of(domain: &DomainRuntime) -> Self {
+        Self::checking(domain, || {})
+    }
+
+    /// Also runs `check` after every owner commit, before the domain publishes it.
+    fn checking(domain: &DomainRuntime, mut check: impl FnMut() + Send + 'static) -> Self {
         let (commit, commits) = tokio::sync::watch::channel(0_u64);
-        domain.before_owner_publish(move || commit.send_modify(|count| *count += 1));
+        domain.before_owner_publish(move || {
+            check();
+            commit.send_modify(|count| *count += 1);
+        });
         Self { commits, published: domain.subscribe() }
     }
 
@@ -137,8 +161,11 @@ async fn handing_over(slice: &Slice) -> AgentId {
 /// Looks at the change of role after every change, as the daemon's transition loop does, until
 /// it is done. A look that fails or aborts it fails the test with the steps it reached.
 async fn handed_over(slice: &Slice, domain: &Arc<DomainRuntime>) {
-    let done = || stage_steps(slice).iter().any(|step| step == "done");
-    let mut changes = Changes::of(domain);
+    handed_over_checking(slice, domain, Changes::of(domain)).await
+}
+
+async fn handed_over_checking(slice: &Slice, domain: &Arc<DomainRuntime>, mut changes: Changes) {
+    let done = || handed(&slice.database, domain);
     let handing = async {
         while !done() {
             let looked = look(domain).await;
@@ -198,6 +225,31 @@ async fn a_staged_tasks_author_hands_over_to_a_new_implementer_once_it_rests() {
     assert!(prompt.contains("as its implementer"), "{prompt}");
     assert!(!prompt.contains("decide:plan"), "the author's own prompt stays in its conversation: {prompt}");
     assert!(!prompt.contains(alondra_domain_model::HANDED_OVER_PLAN), "what the author was told stays in its conversation: {prompt}");
+    slice.domain.stop_sdk_owners();
+}
+
+/// The owner commits the change of role's last step with the command that clears the task's
+/// pending selection, and publishes that state only after: a look between the two must not read
+/// the change of role as done.
+#[tokio::test]
+async fn a_change_of_role_reads_as_done_only_once_its_selection_is_published() {
+    let slice = Slice::new();
+    let task: TaskId = TASK.into();
+    handing_over(&slice).await;
+    let between = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (database, domain, looks) = (slice.database.clone(), Arc::downgrade(&slice.domain), Arc::clone(&between));
+    let changes = Changes::checking(&slice.domain, move || {
+        let Some(domain) = domain.upgrade() else { return };
+        let committed = stage_steps_in(&database).iter().any(|step| step == "done");
+        if committed && domain.read().state().tasks[&TaskId::from(TASK)].pending_selection.is_some() {
+            looks.lock().unwrap().push(handed(&database, &domain));
+        }
+    });
+    handed_over_checking(&slice, &slice.domain, changes).await;
+    let between = between.lock().unwrap().clone();
+    assert!(!between.is_empty(), "the last step is committed before the selection it clears is published");
+    assert!(between.iter().all(|done| !done), "a look before the publication reads the change of role as done");
+    assert!(slice.domain.state().unwrap().tasks[&task].pending_selection.is_none());
     slice.domain.stop_sdk_owners();
 }
 
