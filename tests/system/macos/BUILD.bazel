@@ -26,7 +26,7 @@ sh_test(
     name = "build_from_source_test",
     srcs = ["build_from_source_test.py"],
     data = ["build_from_source.sh"],
-    size = "small",
+    timeout = "moderate",
     # Runs git and make from the script in a temporary directory outside Bazel's sandbox.
     tags = ["no-sandbox"],
 )

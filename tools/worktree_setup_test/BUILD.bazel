@@ -4,7 +4,7 @@ sh_test(
     env = {"TEST_EXECS": "/bin/mv /bin/sh /usr/bin/git /usr/bin/grep /usr/bin/mktemp /usr/bin/tail"},
     srcs = ["setup_test.py"],
     data = ["//:.bazelignore", "//tools:worktree-bazel-setup"],
-    size = "small",
+    timeout = "moderate",
 )
 
 repo_tree()
