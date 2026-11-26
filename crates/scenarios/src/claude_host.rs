@@ -143,6 +143,8 @@ fn running(pid: i32) -> bool {
 /// Tells `host` once its process `pid` exits, whoever ends it: the daemon kills a host's group with
 /// frames it wrote still unread in the relay, which go with it. The exit is registered with the
 /// kernel before this returns, while the process cannot have been reaped and its number reused.
+/// The watch rests on the current clock until the exit and works while it tells the host, so a
+/// wait for calm that looked while the process still ran looks again once the host ended.
 fn tell_exit(pid: u32, host: Arc<Host>) -> std::io::Result<()> {
     // SAFETY: kqueue takes nothing and returns a new descriptor, or -1.
     let queue = unsafe { libc::kqueue() };
@@ -168,17 +170,22 @@ fn tell_exit(pid: u32, host: Arc<Host>) -> std::io::Result<()> {
         host.exited();
         return Ok(());
     }
-    std::thread::Builder::new().name(format!("exit-of-{pid}")).spawn(move || {
-        let mut event = std::mem::MaybeUninit::<libc::kevent>::zeroed();
-        loop {
-            // SAFETY: no change read, at most one event written into `event`.
-            let seen = unsafe { libc::kevent(queue.as_raw_fd(), std::ptr::null(), 0, event.as_mut_ptr(), 1, std::ptr::null()) };
-            match seen {
-                1.. => return host.exited(),
-                0 => continue,
-                _ if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted => continue,
-                _ => return,
+    alondra_core::clock::spawn_named_thread(Some(format!("exit-of-{pid}")), move || {
+        let exited = alondra_core::clock::resting(|| {
+            let mut event = std::mem::MaybeUninit::<libc::kevent>::zeroed();
+            loop {
+                // SAFETY: no change read, at most one event written into `event`.
+                let seen = unsafe { libc::kevent(queue.as_raw_fd(), std::ptr::null(), 0, event.as_mut_ptr(), 1, std::ptr::null()) };
+                match seen {
+                    1.. => return true,
+                    0 => continue,
+                    _ if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted => continue,
+                    _ => return false,
+                }
             }
+        });
+        if exited {
+            host.exited();
         }
     })?;
     Ok(())
