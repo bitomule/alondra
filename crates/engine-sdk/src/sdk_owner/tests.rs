@@ -280,11 +280,15 @@ fn an_input_mid_turn_ends_the_owners_wait_for_its_host_at_once() {
     assert!(driver.waits_for_host(), "the turn runs");
     assert_eq!(driver.pending_permits(), 0);
     let agent = driver.agent().clone();
+    let (waits, owner_waits) = std::sync::mpsc::channel();
+    driver.before_host_wait = Some(Box::new(move || waits.send(()).unwrap()));
     let (stepped, step_ended) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let step = driver.step(&|| false).map(|()| driver);
         let _ = stepped.send(step);
     });
+    // An input that came before the step reached its wait would be sent by that step, not end it.
+    owner_waits.recv().expect("the step goes on to wait for its host");
     let message: crate::domain_messages::MessageBody = serde_json::from_value(serde_json::json!({"text": "Rebase on main before you push"})).unwrap();
     tokio::runtime::Runtime::new().unwrap()
         .block_on(crate::domain_messages::deliver(&*slice.domain, &slice._home, &user(), "Alice", &agent, message, true))
