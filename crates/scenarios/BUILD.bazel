@@ -116,7 +116,7 @@ rust_link_test(
 sh_test(
     name = "scenarios_test",
     size = "medium",
-    shard_count = 39,
+    shard_count = 40,
     srcs = ["run_scenarios.sh"],
     data = [":host_relay", ":scenarios_runner"] + glob(["cases/**"]),
     env = {"HOME": ".", "TEST_EXECS": "own-sandbox", "TZ": "UTC"} | RELAY_ENV,

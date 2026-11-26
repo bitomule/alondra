@@ -221,15 +221,8 @@ fn read_held(domain: &DomainRuntime) -> Result<()> {
     let Some(port) = domain.ports().spec_worktrees() else { return Ok(()) };
     let state = domain.state()?;
     for task in state.tasks.values().filter(|task| matches!(task.open_pr, Some(OpenPrPending::Deliver { .. }))) {
-        let Some((root, heads)) = alondra_engine_ports::spec_reading::unread_held(&*port, &state, &task.id) else { continue };
-        for head in heads {
-            let reading = match alondra_engine_ports::spec_reading::read_commit(&*port, &root, task, &head, false) {
-                Ok(reading) => reading,
-                Err(why) => {
-                    log!("the held delivery of {} waits: its commit {head} could not be read: {why}", task.id);
-                    continue;
-                }
-            };
+        for reading in alondra_engine_ports::spec_reading::read_held(&*port, &state, &task.id) {
+            let head = reading.commit.clone();
             if let Err(error) = execute_system(domain, Command::RecordCommitReading { task_id: task.id.clone(), reading }) {
                 log!("the reading of {head} for {} was not kept: {error}", task.id);
             }

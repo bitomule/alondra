@@ -141,14 +141,6 @@ fn fork_point(root: &Path, revision: &str) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&found).trim().to_owned())
 }
 
-/// The `owner/repo` at the end of a remote's address, by ssh or https.
-fn owner_repo(url: &str) -> Option<String> {
-    let path = url.trim_end_matches('/').trim_end_matches(".git");
-    let mut parts = path.rsplit(['/', ':']);
-    let (repo, owner) = (parts.next()?, parts.next()?);
-    (!repo.is_empty() && !owner.is_empty()).then(|| format!("{owner}/{repo}"))
-}
-
 /// Whether `path` stays inside `root` without going through a link: every folder of it that exists
 /// is a real folder, and the file itself, when it exists, is not a link.
 fn safe_target(root: &Path, path: &str) -> Result<PathBuf, String> {
@@ -225,11 +217,6 @@ impl SpecWorktrees for GitSpecWorktrees {
 
     fn base_commit(&self, root: &Path, commit: &str) -> Result<String, String> {
         fork_point(root, commit)
-    }
-
-    fn repository(&self, root: &Path) -> Result<Option<String>, String> {
-        let Ok(url) = git(root, &["remote", "get-url", "origin"]) else { return Ok(None) };
-        Ok(owner_repo(String::from_utf8_lossy(&url).trim()))
     }
 
     fn changed(&self, root: &Path, from: &str, to: &str) -> Result<Vec<String>, String> {
@@ -366,14 +353,6 @@ mod tests {
         for path in ["../escape.feature", "/etc/escape", "specs/./a.feature"] {
             assert!(write_into(&root, &changes(&[(path, Some("x"))])).is_err(), "{path} is refused");
         }
-    }
-
-    #[test]
-    fn the_repository_is_read_from_an_ssh_or_https_remote() {
-        assert_eq!(owner_repo("git@github.com:ana/app.git").as_deref(), Some("ana/app"));
-        assert_eq!(owner_repo("https://github.com/ana/app").as_deref(), Some("ana/app"));
-        assert_eq!(owner_repo("https://github.com/ana/app.git/").as_deref(), Some("ana/app"));
-        assert_eq!(owner_repo("app"), None);
     }
 
     #[test]

@@ -138,7 +138,7 @@ pub(crate) fn delivered(domain: &dyn Runtime, state: &DomainState, task_id: &Tas
 pub(crate) fn delivered_with(port: &dyn SpecWorktrees, state: &DomainState, task_id: &TaskId, delivery: &InteractionId) -> Option<DeliveredValidation> {
     let task = state.tasks.get(task_id).filter(|task| task.stages.role() == Some(ExecutionRole::Validator))?;
     let root = port.own(state, task_id)?;
-    let head = match spec_reading::own_prs(port, state, task, &root).ok()?.first() {
+    let head = match state.open_prs(task).next() {
         Some(pr) => pr.head.clone(),
         None => port.head_commit(&root).ok()?,
     };
@@ -303,7 +303,6 @@ mod tests {
             self.commits.lock().unwrap().get(commit).cloned().map(|tree| Box::new(tree) as SpecSource).ok_or_else(|| format!("no commit {commit}"))
         }
         fn base_commit(&self, _: &Path, _: &str) -> Result<String, String> { Ok(sha('0')) }
-        fn repository(&self, _: &Path) -> Result<Option<String>, String> { Ok(Some("ana/app".into())) }
         fn changed(&self, _: &Path, from: &str, to: &str) -> Result<Vec<String>, String> {
             let (from, to) = (self.tree(from).0, self.tree(to).0);
             let paths: BTreeSet<&String> = from.keys().chain(to.keys()).collect();
@@ -520,13 +519,26 @@ mod tests {
         repo.check_out(&validated_commit);
         let state = with_pr(validated(&repo, &head, true), "ana/app", 1, &pushed);
         assert!(!check(&repo, state).unwrap().admits(), "the pull request carries code no validator checked");
-        let elsewhere = with_pr(validated(&repo, &head, true), "ana/site", 2, &pushed);
-        assert!(check(&repo, elsewhere).unwrap().admits(), "a pull request of another repository is outside this worktree's specs");
+        let unknown = with_pr(validated(&repo, &head, true), "ana/site", 2, &sha('9'));
+        assert!(check(&repo, unknown).is_err(), "a pull request whose commit Alondra cannot read is refused, whatever a remote says");
 
         repo.check_out(&sha('0'));
         let implementer = with_pr(state_with(task(ExecutionRole::Implementer)), "ana/app", 1, &head);
         let owed = check(&repo, implementer).unwrap();
         assert_eq!(owed.refusal(Some(ExecutionRole::Implementer)).unwrap().code, "validation_required", "checking out main does not hide the pull request");
+    }
+
+    #[test]
+    fn a_branch_that_turns_specs_off_is_refused_on_its_pull_requests_commit() {
+        let repo = Repo::new(base());
+        let off = repo.tree(&sha('0')).with("alondra.toml", "format = 1\n\n[specs]\nenabled = false\n")
+            .with("crates/billing/src/lib.rs", "pub fn refund(paid: u32, _: u32) -> u32 { paid }\n");
+        let head = repo.commit('1', off);
+        repo.check_out(&sha('0'));
+        let state = with_pr(state_with(task(ExecutionRole::Implementer)), "ana/app", 1, &head);
+        let refused = check(&repo, state).unwrap();
+        assert_eq!(refused, DeliveryCheck::SpecsDiffer { unapproved: vec!["alondra.toml".into()], other: vec![] });
+        assert_eq!(refused.refusal(Some(ExecutionRole::Implementer)).unwrap().code, "specs_differ");
     }
 
     #[test]

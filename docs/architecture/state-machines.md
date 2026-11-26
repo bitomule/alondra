@@ -1153,19 +1153,24 @@ transitions = ["Requested -> Validating", "Validating -> Interrupted", "Interrup
 - **Readings**: what Alondra read of one commit of the task with git and the spec engine
   (`CommitReading`): whether the project uses specs there, what the engine lists as not validated
   (each at its fingerprint), its problems, the ledger entries the branch changed (subject, kind,
-  fingerprint, verdict), ledger files no entry explains, and the files other than the ledger changed
-  since the round's `implemented`. Facts only, recorded by the system command `RecordCommitReading`
+  fingerprint, verdict), ledger files no entry explains, the files other than the ledger changed
+  since the round's `implemented`, and the spec files (specs, boundaries, decisions, `alondra.toml`)
+  it holds otherwise than its base or the user approved them, read on that commit whatever it says
+  of specs, so a branch that turns specs off reads as such. Facts only, recorded by the system command `RecordCommitReading`
   (full commit shas, bounded; the latest reading of a commit wins, at most 16 kept). The daemon reads
   the commit of every open pull request of the task and its worktree's HEAD before each final
   `PresentResult` (`daemon-server/src/validation_checks.rs::read_delivery`, within the delivery
   review's git limit, `worktree_unreadable` otherwise); the GitHub loop reads the commits of a held
-  delivery (`engine-github/src/domain_github.rs::read_held`). A pull request of another repository
-  reads as a commit without specs.
+  delivery (`engine-github/src/domain_github.rs::read_held`). Every open pull request of the task is
+  read; a commit Alondra cannot read refuses a node's delivery (`worktree_unreadable`), and for a
+  held delivery is recorded as a reading whose problem says why, a task without a worktree left
+  included. No remote the agent can change decides what is read.
 - **Delivery guard**: the lifecycle records a delivery of a task in stages (`Presented`, M-LIFE-1)
   only through `DomainState::decide`, which asks `delivery_check` first: the one guard, whoever
   delivers. The commits it checks are the heads of the delivery's pull requests, or, without one,
-  the worktree's last reading. In order: `validation_unread` (a commit without a reading); then for
-  each commit of a project with specs, `validation_required` (implementer) or `validation_pending`
+  the worktree's last reading. In order: `validation_unread` (a commit without a reading);
+  `specs_differ` (a delivered commit holds spec files otherwise than its base or the user approved
+  them, turning specs off included); then for each commit of a project with specs, `validation_required` (implementer) or `validation_pending`
   (validator) when the engine lists anything there, `spec_change_open` (a change of the specs
   waits), `ledger_unrecorded` for a ledger entry no validator recorded with that fingerprint and
   verdict, and, for a validator, `changed_after_validation` when anything but the ledger changed
@@ -1177,8 +1182,8 @@ transitions = ["Requested -> Validating", "Validating -> Interrupted", "Interrup
   (`close_task`, `settle_open_pr`, `AdoptOpenPr`) never delivers what the guard refuses
   (`hold_unvalidated_delivery`): an unread commit holds the delivery (`OpenPrPending::Deliver`) until
   the GitHub loop reads it and settles it again; what no validator checked opens a round for a
-  validator; code after `implemented` goes back to the implementer; an open round goes to a new
-  validator; an open change of the specs already waits for its author or the user. No timer
+  validator; code after `implemented`, spec files changed without approval and a commit Alondra
+  could not read go back to the implementer; an open round goes to a new validator; an open change of the specs already waits for its author or the user. No timer
   decides any of it. `specs_differ` comes first, from M-LIFE-16.
 - **Persistence and restart**: the whole record is one JSON row of `task_validations`, written by
   the commit that changes it; a task without a row was never validated. A restart keeps every round,

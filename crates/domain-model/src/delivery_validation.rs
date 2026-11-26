@@ -22,6 +22,16 @@ pub struct LedgerEntry {
     pub verdict: ValidationVerdict,
 }
 
+/// A spec, boundary, decision or settings file a commit holds otherwise than its base or the user
+/// approved it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpecFileChange {
+    pub path: String,
+    /// The user approved a version of it, and the commit holds another.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub approved: bool,
+}
+
 /// What Alondra read of one commit of a task with git and the spec engine.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommitReading {
@@ -49,13 +59,17 @@ pub struct CommitReading {
     /// Files other than the ledger that changed since `since`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub changed: Vec<String>,
+    /// Spec files the commit changed from its base without the user's approval, turning specs off
+    /// included, read on the commit whatever it says of specs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spec_changes: Vec<SpecFileChange>,
 }
 
 impl CommitReading {
     /// Whether it holds no more than a task keeps of one commit.
     pub fn bounded(&self) -> bool {
         self.owed.len() <= MAX_ROUND_ITEMS && self.ledger.len() <= MAX_ROUND_ITEMS && self.stray.len() <= MAX_SCOPE_FILES
-            && self.changed.len() <= MAX_SCOPE_FILES && self.problems.len() <= MAX_READING_PROBLEMS
+            && self.changed.len() <= MAX_SCOPE_FILES && self.problems.len() <= MAX_READING_PROBLEMS && self.spec_changes.len() <= MAX_SCOPE_FILES
     }
 }
 
@@ -68,6 +82,8 @@ pub enum DeliveryCheck {
     Validated,
     /// Alondra has no current reading of these commits.
     Unread(Vec<String>),
+    /// A delivered commit holds spec files otherwise than its base or the user approved them.
+    SpecsDiffer { unapproved: Vec<String>, other: Vec<String> },
     /// A change of the specs still waits for its author or the user.
     SpecChangeOpen,
     /// A validator checks the work now, and someone else delivers it.
@@ -109,6 +125,17 @@ impl DeliveryCheck {
             Self::NotGated | Self::Validated => return None,
             Self::Unread(commits) => ("validation_unread", format!(
                 "Nothing was presented: Alondra has not read the delivered commit ({}) with the spec engine yet. Present the result again: Alondra reads it first.", listed(commits))),
+            Self::SpecsDiffer { unapproved, other } => ("specs_differ", {
+                let mut parts = vec![];
+                if !unapproved.is_empty() {
+                    parts.push(format!("these spec files changed without the user's approval: {}", listed(unapproved)));
+                }
+                if !other.is_empty() {
+                    parts.push(format!("these approved spec files are not committed exactly as approved: {}", listed(other)));
+                }
+                format!("Nothing was presented: on the delivered commit {}. In a project with specs only the user changes them, turning them off included: commit each file as it was on the base branch, or as Alondra wrote it when the user approved it; a change the work needs goes through request_spec_change (implementer) or a new plan.",
+                    parts.join("; "))
+            }),
             Self::SpecChangeOpen => ("spec_change_open",
                 "Nothing was presented: a change of the specs still waits for its author or the user. The work is delivered once it is settled.".to_owned()),
             Self::RoundOpen => ("validation_open", "A validator checks this work now: end your turn, it delivers once every check passes".to_owned()),
@@ -173,7 +200,13 @@ impl DomainState {
         if !unread.is_empty() {
             return DeliveryCheck::Unread(unread);
         }
-        let readings: Vec<&CommitReading> = commits.iter().filter_map(|commit| task.validation.reading(commit)).filter(|reading| reading.specs).collect();
+        let read: Vec<&CommitReading> = commits.iter().filter_map(|commit| task.validation.reading(commit)).collect();
+        let (unapproved, other): (Vec<&SpecFileChange>, Vec<&SpecFileChange>) = read.iter().flat_map(|reading| &reading.spec_changes).partition(|change| !change.approved);
+        if !unapproved.is_empty() || !other.is_empty() {
+            let paths = |changes: Vec<&SpecFileChange>| changes.into_iter().map(|change| change.path.clone()).collect();
+            return DeliveryCheck::SpecsDiffer { unapproved: paths(unapproved), other: paths(other) };
+        }
+        let readings: Vec<&CommitReading> = read.into_iter().filter(|reading| reading.specs).collect();
         let spec_change_open = task.specs.amendments.iter().any(|a| matches!(a.state, AmendmentState::Requested | AmendmentState::Proposed));
         for reading in &readings {
             if !reading.owed.is_empty() || !reading.problems.is_empty() {
@@ -236,9 +269,9 @@ impl DomainState {
     /// Alondra was about to deliver the open pull request of `task_id` for its node, and `check`
     /// does not admit it: nothing reaches the user, and the work goes to whoever moves it next. An
     /// unread commit waits for Alondra to read it and is delivered then; what a validator has not
-    /// checked opens a round on that commit; code nobody validated goes back to the implementer;
-    /// an open round goes to a new validator. A change of the specs already waits for its author
-    /// or the user.
+    /// checked opens a round on that commit; code nobody validated, spec files changed without
+    /// approval and a commit Alondra could not read go back to the implementer; an open round goes
+    /// to a new validator. A change of the specs already waits for its author or the user.
     pub fn hold_unvalidated_delivery(&mut self, task_id: &TaskId, check: DeliveryCheck, result: Option<String>, lifecycles: &mut crate::Lifecycles) -> Result<(), DomainError> {
         use crate::validation::{RoundItem, ValidationRound};
         use crate::{HandoverCause, LifecycleRecord, OpenPrPending, StageHandover};
@@ -256,7 +289,8 @@ impl DomainState {
                 let round = task.validation.current().map_or(0, |round| round.number);
                 handover(ExecutionRole::Validator, HandoverCause::ValidatorRetry { round })
             }
-            DeliveryCheck::ChangedAfterValidation(_) => handover(ExecutionRole::Implementer, HandoverCause::DeliveryReturned),
+            DeliveryCheck::ChangedAfterValidation(_) | DeliveryCheck::SpecsDiffer { .. } => handover(ExecutionRole::Implementer, HandoverCause::DeliveryReturned),
+            DeliveryCheck::Listed { items, .. } if items.is_empty() => handover(ExecutionRole::Implementer, HandoverCause::DeliveryReturned),
             DeliveryCheck::Listed { .. } | DeliveryCheck::Unrecorded { .. } => {
                 let (commit, items) = check.to_validate().expect("listed or unrecorded");
                 let number = task.validation.rounds.last().map_or(1, |round| round.number + 1);
@@ -275,6 +309,19 @@ impl DomainState {
         task.stages.handover = Some(next);
         let input = self.next_input(task_id);
         self.decide(lifecycles, task_id, LifecycleRecord::Told { input, text: Some(crate::stage_input(to)), answers: None })
+    }
+}
+
+impl DomainState {
+    /// The spec files the user approved for `task`, and for the task it is stacked on: what its
+    /// branch may hold otherwise than its base.
+    pub fn allowed_specs(&self, task: &Task) -> crate::SpecFiles {
+        let mut allowed = crate::SpecFiles::new();
+        let upstream = task.stack.as_ref().and_then(|stack| self.tasks.get(&stack.upstream_task));
+        for approved in upstream.into_iter().chain([task]).filter_map(|task| task.specs.approved.as_ref()) {
+            allowed.extend(approved.allowed());
+        }
+        allowed
     }
 }
 

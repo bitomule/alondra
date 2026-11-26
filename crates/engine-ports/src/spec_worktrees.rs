@@ -24,8 +24,6 @@ pub trait SpecWorktrees: Send + Sync {
     fn commit(&self, root: &Path, commit: &str) -> Result<SpecSource, String>;
     /// The full sha of the commit where `commit` leaves the base branch of the repository at `root`.
     fn base_commit(&self, root: &Path, commit: &str) -> Result<String, String>;
-    /// The `owner/repo` its `origin` remote names, `None` when it has none Alondra can read.
-    fn repository(&self, root: &Path) -> Result<Option<String>, String>;
     /// The paths that differ between the commits `from` and `to`, in path order.
     fn changed(&self, root: &Path, from: &str, to: &str) -> Result<Vec<String>, String>;
     /// The paths of the worktree at `root` a commit of the whole tree would change: modified,
