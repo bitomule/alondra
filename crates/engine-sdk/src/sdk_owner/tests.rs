@@ -3950,6 +3950,34 @@ async fn a_takeover_its_host_never_answered_hands_the_same_input_to_a_fresh_host
     slice.domain.stop_sdk_owners();
 }
 
+#[cfg(not(feature = "real-hosts"))]
+/// A look at the tasks read the state while the task still worked, and asks for its takeover only
+/// once its owner put it on the user, as when its host was lost, and let go of it. Nothing takes it
+/// over: no host starts, its card stays open, and its crash report still explains an execution
+/// that was not taken over, not a session that ended.
+#[test]
+fn a_look_that_read_the_task_working_before_its_host_was_lost_takes_nothing_over() {
+    let slice = Slice::new();
+    slice.domain.enable_sdk(slice.backend.clone());
+    let mut driver = slice.launch();
+    slice.settle(&mut driver);
+    instruct(&*slice.domain, "Add the tests first");
+    let read_before = slice.domain.state().unwrap();
+    assert!(reads_as_working(&read_before).contains(&TASK.into()), "the look reads the task working");
+    driver.stop().unwrap();
+    lost(&*slice.domain, &TASK.into(), "its new host stopped before it could take the task's next message");
+    drop(driver);
+    let starts = slice.starts().len();
+
+    take_working_unowned(&*slice.domain, &read_before, alondra_core::now_millis());
+    slice.domain.join_retakes();
+
+    assert_eq!(slice.starts().len(), starts, "no host starts for a task held for the user");
+    assert!(open_card(&slice.domain, HOST_LOST_PREFIX).is_some(), "the card that holds the task stays open");
+    assert_eq!(slice.domain.state().unwrap().task_failure(&TASK.into()), Some(alondra_domain_rules::ReportedFailure::NotResumed));
+    slice.domain.stop_sdk_owners();
+}
+
 /// Tells the node `text` as the user does, through the daemon `domain`.
 fn tell_through(domain: &DomainRuntime, slice: &Slice, driver: &Driver, text: &str) {
     let message: crate::domain_messages::MessageBody = serde_json::from_value(serde_json::json!({"text": text})).unwrap();

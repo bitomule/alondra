@@ -1393,7 +1393,7 @@ pub fn take_working_unowned(domain: &dyn Runtime, state: &DomainState, now: alon
     let due = due_unowned(&mut domain.sdk_owners().unowned_takes.lock_or_recover("the tasks taken over unowned"), working, now);
     for task in due {
         log!("{task} reads as working with no SDK host of its own: one that resumes its session takes it over");
-        retake(domain, task);
+        retake_with_policy(domain, task, Retaking::FoundWorking);
     }
 }
 
@@ -1444,6 +1444,14 @@ pub(crate) fn reads_as_working(state: &DomainState) -> Vec<TaskId> {
         .map(|task| task.id.clone()).collect()
 }
 
+/// Whether `task` reads as working with its execution in no owner's hand, judged now. The hand is
+/// read first: an owner lets go only after it recorded what became of the task, such as the card
+/// that holds it for the user, so a task let go of already reads as held.
+fn still_working_unowned(domain: &dyn Runtime, task: &TaskId) -> bool {
+    !domain.sdk_owners().in_hand.lock_or_recover("the executions in hand").contains_key(task)
+        && reads_as_working(&domain.state()).contains(task)
+}
+
 /// Whether an adopted host's process is gone. A host whose process this daemon could not learn is
 /// taken as running.
 fn adopted_without_process(host: Option<HostStop>) -> std::io::Result<bool> {
@@ -1484,9 +1492,19 @@ pub(crate) fn wake_released(domain: &dyn Runtime, task: &TaskId) {
 
 /// The user chose «Try again» on the card of a task whose execution was lost: it is taken over
 /// again, on a thread of its own, as at the daemon's start; another failure puts a new card.
-pub fn retake(domain:&dyn Runtime,task:TaskId){retake_with_policy(domain,task,false)}
-pub(crate) fn retake_manually(domain:&dyn Runtime,task:TaskId){retake_with_policy(domain,task,true)}
-fn retake_with_policy(domain: &dyn Runtime, task: TaskId,explicit_account_retry:bool) {
+pub fn retake(domain:&dyn Runtime,task:TaskId){retake_with_policy(domain,task,Retaking::Told)}
+pub(crate) fn retake_manually(domain:&dyn Runtime,task:TaskId){retake_with_policy(domain,task,Retaking::Manually)}
+
+/// Why a takeover runs. One a look at the tasks asked for decided on the state it read, which may
+/// predate what the task's owner recorded before it let go of the execution.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Retaking {
+    Told,
+    Manually,
+    FoundWorking,
+}
+
+fn retake_with_policy(domain: &dyn Runtime, task: TaskId, retaking: Retaking) {
     if crate::provider_transition::holds_execution(domain,&task){return}
 
     let Some((backend, runtime)) = domain.sdk() else {
@@ -1504,7 +1522,7 @@ fn retake_with_policy(domain: &dyn Runtime, task: TaskId,explicit_account_retry:
     let refusal = crate::domain_store::carried_refusal();
     retakes.push((task.clone(), Retake::spawn(runtime, move |runtime| {
         refusal();
-        take_again(runtime, &backend, &task, explicit_account_retry);
+        take_again(runtime, &backend, &task, retaking);
     })));
 }
 
@@ -1512,11 +1530,15 @@ fn retake_with_policy(domain: &dyn Runtime, task: TaskId,explicit_account_retry:
 /// answered the last one changes nothing: the domain refuses it, the last takeover is recorded as
 /// unanswered, and a fresh host takes the same input the execution waits for, any host still
 /// running ended first.
-fn take_again(runtime: &Arc<dyn Runtime>, backend: &SdkBackend, task: &TaskId, explicit_account_retry: bool) {
+fn take_again(runtime: &Arc<dyn Runtime>, backend: &SdkBackend, task: &TaskId, retaking: Retaking) {
     let _turn = TakeoverTurn::wait(&**runtime, task);
     if owned_now(&**runtime, task) {
         return;
     }
+    if retaking == Retaking::FoundWorking && !still_working_unowned(&**runtime, task) {
+        return log!("{task} no longer reads as working with no SDK host of its own: it is not taken over");
+    }
+    let explicit_account_retry = retaking == Retaking::Manually;
     let record = |fact: RuntimeObservation| -> Result<(), StoreError> {
         let state = runtime.state();
         let generation = state.lifecycle_of(task).map_err(StoreError::Domain)?.execution().map(|stamp| stamp.generation())
@@ -1600,7 +1622,7 @@ pub fn halt(domain: &dyn Runtime, task: TaskId, agent: AgentId) {
             Some(Ok(())) => log!("the SDK host of {task} and every process under it stopped for its pause"),
             Some(Err(failed)) => log!("the SDK host of {task} did not stop cleanly for its pause: {failed}"),
         }
-        take_again(runtime, &backend, &task, false);
+        take_again(runtime, &backend, &task, Retaking::Told);
     })));
 }
 
