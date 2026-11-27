@@ -26,6 +26,7 @@ final class AccountKeyFeatureTests: XCTestCase {
         return store
     }
 
+    // spec: antigravity.apps/daemon-says-whether-a-key-is-set
     func testTheDaemonSaysWhetherAKeyIsSetAndNeverSendsOneBack() throws {
         let document = try Fixtures.document("accounts-antigravity-ios")
         let accounts = ServerSettingsFeature.State(key: .accounts).with(document).accountRows.compactMap(\.account)
@@ -41,6 +42,7 @@ final class AccountKeyFeatureTests: XCTestCase {
         XCTAssertNil(account.credential, "an account that takes no key has no key field")
     }
 
+    // spec: antigravity.apps/field-starts-empty
     func testTheFieldStartsEmptyEveryTimeAnAccountOpens() async throws {
         let sent = LockIsolated<[ActionRequest]>([])
         let store = try store(sent: sent)
@@ -55,6 +57,7 @@ final class AccountKeyFeatureTests: XCTestCase {
         XCTAssertTrue(sent.value.isEmpty, "nothing goes until the key is saved")
     }
 
+    // spec: antigravity.apps/key-sent-once-and-forgotten
     func testSavingSendsTheKeyOnceInTheActionAndForgetsItOnTheScreen() async throws {
         let sent = LockIsolated<[ActionRequest]>([])
         let gate = Gate()
@@ -83,6 +86,7 @@ final class AccountKeyFeatureTests: XCTestCase {
         XCTAssertFalse(String(describing: store.state).contains(key), "once answered nothing on the screen holds the key")
     }
 
+    // spec: antigravity.apps/remove-sends-clear-without-a-key
     func testRemovingSendsTheClearOptionWithoutAKey() async throws {
         let sent = LockIsolated<[ActionRequest]>([])
         let store = try store(sent: sent, reply: { try Responses.applied("Key removed") })
@@ -98,6 +102,7 @@ final class AccountKeyFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.credentialDraft, "")
     }
 
+    // spec: antigravity.apps/refused-key-shows-the-reason
     func testARefusedKeyShowsTheDaemonsReasonAndKeepsNothing() async throws {
         let sent = LockIsolated<[ActionRequest]>([])
         let store = try store(sent: sent, reply: { try Responses.refused("That is not a Gemini API key") })
@@ -109,6 +114,7 @@ final class AccountKeyFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.credentialDraft, "", "a refused key is typed again, never kept to retry")
     }
 
+    // spec: antigravity.apps/no-key-field-sends-nothing
     func testAnAccountWithoutAKeyFieldSendsNothing() async throws {
         let sent = LockIsolated<[ActionRequest]>([])
         let store = try store(sent: sent)

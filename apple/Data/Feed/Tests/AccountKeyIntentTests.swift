@@ -22,6 +22,7 @@ import Testing
         return try files.filter { !$0.hasDirectoryPath }.reduce(into: Data()) { $0.append(try Data(contentsOf: $1)) }
     }
 
+    // spec: antigravity.apps/outbox-keeps-the-key-encrypted
     @Test func theKeyIsOnlyEverOnDiskEncryptedAndLeavesWithTheAnswer() async throws {
         let directory = try TestFiles.directory()
         let store = try await ViewActionIntentStore(directory: directory, keyMaterial: Data(repeating: 17, count: 32), scope: scope)
@@ -40,6 +41,7 @@ import Testing
         #expect(try bytes(under: directory).range(of: Data(key.utf8)) == nil)
     }
 
+    // spec: antigravity.apps/relay-sees-only-the-sealed-envelope
     @Test func theRelayCarriesTheKeyOnlyInsideTheSealedEnvelope() throws {
         let (device, deviceAgreement) = (P256.Signing.PrivateKey(), P256.KeyAgreement.PrivateKey())
         let (mac, macAgreement) = (P256.Signing.PrivateKey(), P256.KeyAgreement.PrivateKey())

@@ -121,6 +121,7 @@ fn moving_to_another_account_says_whether_it_is_on_and_its_risk() {
     assert!(on[0].ends_with(": on") || on[0].ends_with(": activado"), "{on:?}");
 }
 
+// spec: antigravity.key/cli-names-the-account
 #[test]
 fn set_key_names_an_antigravity_account_by_its_id_or_its_name_and_never_falls_back_to_claude() {
     assert_eq!(named_account(Provider::Claude, "antigravity/studio"), (Provider::Antigravity, "studio".into()));
@@ -129,6 +130,7 @@ fn set_key_names_an_antigravity_account_by_its_id_or_its_name_and_never_falls_ba
     assert_eq!(named_account(Provider::Claude, "nowhere/x"), (Provider::Claude, "nowhere/x".into()), "an unknown prefix is part of the name");
 }
 
+// spec: antigravity.key/cli-reads-the-key
 #[test]
 fn a_key_is_asked_on_a_terminal_only_when_asking_is_allowed_and_read_from_a_pipe_always() {
     assert_eq!(key_prompt(true, true), Some(true));

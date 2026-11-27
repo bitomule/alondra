@@ -2170,6 +2170,7 @@ fn a_host_loss_of_a_node_the_task_no_longer_runs_on_is_refused() {
 
 /// The host said its account was refused for want of a sign-in or a key: the account is signed
 /// out, so no other work starts on it, and the task's card asks to sign in before trying again.
+// spec: antigravity.signed-out/refusal-signs-the-account-out
 #[test]
 fn a_host_refused_for_its_sign_in_signs_its_account_out_and_asks_to_sign_in() {
     use alondra_core::accounts::{AccountId, AccountState, AccountStatus, Provider};

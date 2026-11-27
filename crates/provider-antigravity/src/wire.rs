@@ -626,6 +626,7 @@ fn timed_out(error: &std::io::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // spec: antigravity.turns/event-cursors-are-contiguous
     #[test]
     fn lane_replay_precedes_durable_commit_without_skipping_wire_evidence() {
         let mut cursor = LaneCursor {
@@ -650,6 +651,7 @@ mod tests {
     }
     // While a command waits for its receipt, two large tool results and many small events
     // arriving meanwhile are queued, up to what the host itself holds without acknowledgement.
+    // spec: antigravity.turns/events-queued-behind-a-receipt
     #[test]
     fn events_queued_behind_a_receipt_hold_two_large_results() {
         let large = 900_000;
@@ -761,6 +763,7 @@ mod tests {
     // A host of an earlier release announces the capabilities it was built with. An action it did
     // not announce is refused before any offer, and not a byte of it reaches the host, which might
     // not even read it.
+    // spec: antigravity.turns/host-lane-refuses-what-the-host-did-not-announce
     #[test]
     fn an_action_the_host_did_not_announce_is_refused_without_reaching_it() {
         let owner = FixtureOwner("epoch-test".into());
@@ -772,6 +775,7 @@ mod tests {
     }
     // An input waits for its receipt as long as the host lives, and the host that ends answers
     // that wait at once: the input is in doubt, and nothing waited on a clock to know it.
+    // spec: antigravity.turns/host-that-ends-before-its-receipt
     #[test]
     fn a_host_that_ends_before_its_receipt_ends_the_wait_for_it() {
         let owner = FixtureOwner("epoch-test".into());
@@ -784,6 +788,7 @@ mod tests {
         assert!(answer.is_err(), "{answer:?}");
         host.join().unwrap();
     }
+    // spec: antigravity.turns/task-host-needs-decisions-and-no-orchestrator-host
     #[test]
     fn a_task_host_that_cannot_carry_decisions_is_refused_and_no_orchestrator_host_is_attached() {
         let Body::Hello(mut hello) = serde_json::from_slice::<Frame>(include_bytes!("../../agent-protocol/fixtures/hello.json")).unwrap().body else { unreachable!() };
@@ -816,6 +821,7 @@ mod tests {
     }
     // A host that ends right after its last frames, such as the interrupted result of a close, leaves
     // them in the socket for a daemon that reads them later.
+    // spec: antigravity.turns/host-output-before-close-is-read
     #[test]
     fn what_a_host_wrote_before_it_closed_its_end_is_still_read() {
         let (mut daemon, mut host) = UnixStream::pair().unwrap();
@@ -826,6 +832,7 @@ mod tests {
         assert_eq!(read_bounded(&mut daemon, &mut bytes, deadline, Instant::now).unwrap(), 6);
         assert_eq!(read_bounded(&mut daemon, &mut bytes, deadline, Instant::now).unwrap(), 0, "then the end of the host");
     }
+    // spec: antigravity.turns/deadlines-are-absolute
     #[test]
     fn fragmented_frame_progress_cannot_reset_absolute_deadline() {
         let now = Instant::now();
@@ -869,6 +876,7 @@ mod tests {
             self.bytes.read(bytes)
         }
     }
+    // spec: antigravity.turns/deadlines-are-absolute
     #[test]
     fn a_socket_timeout_in_real_time_waits_while_the_daemon_clock_allows() {
         let now = Instant::now();
@@ -904,6 +912,7 @@ mod tests {
             Ok(())
         }
     }
+    // spec: antigravity.turns/deadlines-are-absolute
     #[test]
     fn a_write_timeout_in_real_time_waits_while_the_daemon_clock_allows() {
         let now = Instant::now();
@@ -927,6 +936,7 @@ mod tests {
             Ok(())
         }
     }
+    // spec: antigravity.turns/deadlines-are-absolute
     #[test]
     fn fragmented_command_write_cannot_reset_absolute_deadline() {
         let now = Instant::now();

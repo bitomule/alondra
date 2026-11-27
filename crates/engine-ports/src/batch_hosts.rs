@@ -144,6 +144,7 @@ mod tests {
         assert_eq!(of(&registry, Provider::Codex).unwrap().provider(), Provider::Codex);
     }
 
+    // spec: antigravity.nodes/no-orchestrator-batches
     #[test]
     fn the_registry_names_each_orchestrator_provider_left_without_batches() {
         let registry = crate::Registry::default();

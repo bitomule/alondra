@@ -1429,6 +1429,7 @@ fn only_a_login_item_turned_off_is_reported_and_only_a_person_fixes_it() {
     assert!(matches!(&c.fix, Some(Fix::Person(way)) if way.contains("Allow in the Background")), "{:?}", c.fix);
 }
 
+// spec: antigravity.account-check/doctor-checks-agy
 #[test]
 fn the_doctor_checks_that_agy_is_installed_and_recent_enough_once_antigravity_is_connected() {
     let check = |printed: Option<&str>| {

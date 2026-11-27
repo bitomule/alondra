@@ -10984,6 +10984,7 @@ fn a_running_task_waiting_for_the_user_under_a_closed_request_is_listed_as_worki
     }
 }
 
+// spec: antigravity.apps/accounts-show-access-key-and-sign-in
 #[test]
 fn antigravity_accounts_show_their_access_key_and_sign_in_and_never_the_key() {
     use alondra_core::accounts::{AccountBilling, AccountId, AccountState, AccountStatus, AntigravityStatus, Provider};
@@ -11050,6 +11051,7 @@ fn antigravity_accounts_show_their_access_key_and_sign_in_and_never_the_key() {
 
 /// The key field of the account settings in the apps: an API key account with a key and one without, and a
 /// Cloud project account without one.
+// spec: antigravity.apps/key-views-match-goldens
 #[test]
 fn antigravity_key_views_match_goldens() {
     use alondra_core::accounts::{AccountId, AccountKey, AccountState, AccountStatus, AntigravityStatus, Provider};

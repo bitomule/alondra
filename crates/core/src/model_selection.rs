@@ -289,6 +289,7 @@ mod tests {
         advertised
     }
 
+    // spec: antigravity.models/shared-model-name-is-ambiguous
     #[test]
     fn a_model_without_provider_belongs_to_the_one_connected_provider_that_knows_it() {
         let both = [Provider::Claude, Provider::Codex];

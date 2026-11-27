@@ -1,3 +1,4 @@
+# spec: antigravity.nodes/turn-cut-and-resumed
 name = "an antigravity turn cut by its host dying goes on in the same session with a new host"
 max_virtual = "30m"
 

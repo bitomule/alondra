@@ -95,6 +95,7 @@ fn work() -> AccountKey {
     AccountKey::new(Provider::Antigravity, AccountId::parse("work").unwrap())
 }
 
+// spec: antigravity.accounts/named-account-has-a-private-folder
 #[test]
 fn a_named_account_gets_a_private_folder_linked_to_the_users_configuration() {
     let root = Directory::new();
@@ -123,6 +124,7 @@ fn a_named_account_gets_a_private_folder_linked_to_the_users_configuration() {
     assert!(gemini.join("GEMINI.md").exists() && gemini.join("skills").is_dir(), "removing the account never removes what its links point to");
 }
 
+// spec: antigravity.accounts/linked-account-folder-is-refused
 #[test]
 fn a_linked_account_folder_is_refused() {
     let root = Directory::new();
@@ -134,8 +136,13 @@ fn a_linked_account_folder_is_refused() {
     assert!(set_key(&home, &work(), Some(&Secret::new("k".into()))).is_err());
     remove(&home, &work()).unwrap();
     assert!(root.join("elsewhere").is_dir(), "removing a linked folder removes the link only");
+    assert!(fs::symlink_metadata(home.join("provider-accounts/antigravity/work")).is_err(), "removing the account removes the link");
 }
 
+// spec: antigravity.key-file/written-whole-and-private
+// spec: antigravity.key/invalid-key-is-refused
+// spec: antigravity.key/default-account-keeps-no-key
+// spec: antigravity.key/removing-the-account-removes-its-key
 #[test]
 fn the_key_is_kept_in_a_0600_file_replaced_whole_whatever_the_umask() {
     let root = Directory::new();
@@ -153,6 +160,17 @@ fn the_key_is_kept_in_a_0600_file_replaced_whole_whatever_the_umask() {
     assert!(key_set(&home, &work()));
     let folder = path.parent().unwrap();
     assert_eq!(fs::read_dir(folder).unwrap().filter_map(Result::ok).filter(|entry| entry.file_name().to_string_lossy().contains(KEY_FILE)).count(), 1, "no staged copy is left");
+    let mut folders = vec![folder.to_path_buf()];
+    while let Some(dir) = folders.pop() {
+        for entry in fs::read_dir(&dir).unwrap().filter_map(Result::ok) {
+            let kind = entry.file_type().unwrap();
+            if kind.is_dir() {
+                folders.push(entry.path());
+            } else if kind.is_file() && entry.path() != path {
+                assert!(!fs::read_to_string(entry.path()).unwrap_or_default().contains("AIza"), "{} holds a copy of the key", entry.path().display());
+            }
+        }
+    }
     let stray = folder.join(format!(".{KEY_FILE}.cut-short"));
     fs::write(&stray, "AIza-left-behind").unwrap();
     set_key(&home, &work(), None).unwrap();
@@ -170,6 +188,7 @@ fn the_key_is_kept_in_a_0600_file_replaced_whole_whatever_the_umask() {
     assert!(!path.exists(), "removing the account removes its key");
 }
 
+// spec: antigravity.key-file/links-are-never-followed
 #[test]
 fn a_linked_or_shared_key_file_is_never_read_or_written_through() {
     let root = Directory::new();
@@ -188,12 +207,15 @@ fn a_linked_or_shared_key_file_is_never_read_or_written_through() {
     assert!(key(&home, &work()).is_err(), "a key others can read is refused");
 }
 
+// spec: antigravity.key-file/never-printed
 #[test]
 fn a_secret_never_prints() {
     let secret = Secret::new("AIza-visible".into());
     assert!(!format!("{secret:?}").contains("AIza"));
 }
 
+// spec: antigravity.account-check/no-prompt-no-sign-in
+// spec: antigravity.models/each-model-has-its-own-levels
 #[test]
 fn a_signed_in_google_account_reads_its_catalog_without_a_prompt_or_a_sign_in() {
     let fake = Fake::new();
@@ -210,6 +232,7 @@ fn a_signed_in_google_account_reads_its_catalog_without_a_prompt_or_a_sign_in() 
     assert!(!methods.iter().any(|method| method == "authenticate" || method == "session/prompt"), "{methods:?}");
 }
 
+// spec: antigravity.account-check/states-of-a-check
 #[test]
 fn the_check_reports_signed_out_too_old_missing_and_another_agent() {
     let fake = Fake::new();
@@ -223,6 +246,8 @@ fn the_check_reports_signed_out_too_old_missing_and_another_agent() {
     assert_eq!(check(&missing).check, Check::Unavailable(Unavailable::NotInstalled));
 }
 
+// spec: antigravity.account-check/key-account-signs-in-with-its-own-key
+// spec: antigravity.account-check/only-sign-in-required-is-signed-out
 #[test]
 fn a_key_account_authenticates_with_its_own_key_alone() {
     let fake = Fake::new();
@@ -241,6 +266,7 @@ fn a_key_account_authenticates_with_its_own_key_alone() {
         Check::Unavailable(Unavailable::Failed), "only ACP's auth-required code means signed out");
 }
 
+// spec: antigravity.usage/usage-read-through-agy
 #[test]
 fn the_usage_reading_reads_the_report_and_tells_a_refusal() {
     let fake = Fake::new();

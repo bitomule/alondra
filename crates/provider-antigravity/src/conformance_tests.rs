@@ -60,6 +60,14 @@ impl Native for Antigravity {
     }
 }
 
+// spec: antigravity.conformance/simple-turn
+// spec: antigravity.conformance/several-turns
+// spec: antigravity.conformance/input-during-turn-waits-for-the-prompt
+// spec: antigravity.conformance/interrupt
+// spec: antigravity.conformance/process-dies-then-resume
+// spec: antigravity.conformance/finished-input-not-taken-again
+// spec: antigravity.conformance/consumed-input-named-by-provider
+// spec: antigravity.conformance/decisions
 #[test]
 fn every_scenario_of_the_suite_holds_for_antigravity() {
     alondra_provider_conformance::run(&Antigravity).assert_conforms();

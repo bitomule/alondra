@@ -577,6 +577,14 @@ fn connecting_claude_on_a_fresh_install_gives_the_orchestrator_a_model_claude_ad
     assert_eq!(kept[&Provider::Claude][&ModelProfile::Orchestrator], chosen, "a later connection keeps the user's choice");
 }
 
+// spec: antigravity.account-check/startup-check-runs-no-agy
+// spec: antigravity.account-check/key-account-without-key-starts-no-agy
+// spec: antigravity.account-check/new-key-checks-again
+// spec: antigravity.account-check/checked-account-is-not-checked-again
+// spec: antigravity.account-check/check-now
+// spec: antigravity.usage/checked-account-records-its-usage
+// spec: antigravity.accounts/orchestrator-never-on-antigravity
+// spec: antigravity.accounts/node-runs-on-the-account-it-names
 #[test]
 fn antigravity_accounts_are_checked_with_their_models_and_usage_only_when_due_and_run_no_node() {
     use alondra_core::antigravity_account::{Access, Check, CheckReport, Settings, Unavailable, UsageOutcome, Version};
@@ -661,6 +669,8 @@ fn antigravity_accounts_are_checked_with_their_models_and_usage_only_when_due_an
     assert_eq!(orchestrator.code, "account_unavailable", "the orchestrator never runs on Antigravity");
 }
 
+// spec: antigravity.key/key-goes-only-with-the-written-change
+// spec: antigravity.key/re-added-account-starts-without-a-key
 #[test]
 fn an_antigravity_key_goes_only_with_the_change_that_drops_it_and_a_re_added_account_starts_without_one() {
     use alondra_core::antigravity_account::{Access, Secret, Settings};
@@ -697,6 +707,7 @@ fn an_antigravity_key_goes_only_with_the_change_that_drops_it_and_a_re_added_acc
 
 /// A Gemini API key and an Agent Platform key are not the same key: an account that changes from
 /// one access to the other drops its key with the change, and keeps it while its access stays.
+// spec: antigravity.key/access-change-drops-the-key
 #[test]
 fn an_antigravity_key_goes_when_the_account_moves_between_api_key_and_cloud_project() {
     use alondra_core::antigravity_account::{Access, Secret, Settings};
@@ -723,6 +734,7 @@ fn an_antigravity_key_goes_when_the_account_moves_between_api_key_and_cloud_proj
 
 /// The key is written before its change is committed; when the domain refuses the change, the
 /// folder gets back what it held, so no node or check runs on a key the domain never recorded.
+// spec: antigravity.key/domain-refusal-rolls-back
 #[test]
 fn a_key_change_the_domain_refuses_leaves_the_folder_as_it_was() {
     use alondra_core::antigravity_account::{Access, Secret, Settings};

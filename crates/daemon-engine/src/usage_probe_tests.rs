@@ -468,6 +468,7 @@ fn hosts() -> alondra_agent_runtime::owned_host::ProcessHosts {
 }
 
 // A signed-in Antigravity account runs nodes: while it has room, Claude's limit holds no Mac-wide wait.
+// spec: antigravity.usage/account-with-room-keeps-the-mac-working
 #[test]
 fn an_antigravity_account_with_room_keeps_the_mac_working_while_claude_waits() {
     let home = Directory::new();

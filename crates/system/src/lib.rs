@@ -282,6 +282,8 @@ mod tests {
         CLAUDE_HOME.get().cloned().unwrap_or_default()
     }
 
+    // spec: antigravity.key-file/one-rule-for-daemon-and-host
+    // spec: antigravity.key-file/refused-file-reads-as-no-key
     #[test]
     fn the_macs_accounts_keep_the_contract_the_doubles_keep() {
         let scratch = crate::test_support::Directory::new();

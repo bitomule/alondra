@@ -7,6 +7,7 @@ import XCTest
 final class ActionInputRedactionTests: XCTestCase {
     private let key = "AIzaSyD-example-0000000000000000000000"
 
+    // spec: antigravity.apps/printing-an-action-hides-its-text
     func testNothingThatPrintsAnActionShowsItsText() {
         let request = ActionRequest(commandId: "00000000-0000-4000-8000-000000000001", dataEpoch: "epoch", client: .ios, lang: "en",
             actionId: "account_credential:studio@7~antigravity",

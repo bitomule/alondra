@@ -81,6 +81,8 @@ mod tests {
         WireDecision::Allow { updated_input: json!({"optionId": id}).as_object().unwrap().clone() }
     }
 
+    // spec: antigravity.permissions/allow-selects-allow-once
+    // spec: antigravity.permissions/never-an-always-option
     #[test]
     fn allow_selects_the_first_allow_once_option_and_never_an_always_one() {
         let request = asked(DecisionKind::Permission, json!([
@@ -95,12 +97,14 @@ mod tests {
         assert_eq!(decision(action), option("allow"));
     }
 
+    // spec: antigravity.permissions/deny-selects-reject-once
     #[test]
     fn deny_reaches_the_host_as_a_deny_which_picks_reject_once() {
         let request = asked(DecisionKind::Permission, json!([{"optionId": "allow", "name": "Allow", "kind": "allow_once"}, {"optionId": "deny", "name": "Deny", "kind": "reject_once"}]));
         assert_eq!(decision(respond_action(4, &request, &Decision::Deny { message: "Not now".into() }).unwrap()), WireDecision::Deny { message: "Not now".into() });
     }
 
+    // spec: antigravity.permissions/question-answered-by-its-own-options
     #[test]
     fn an_answer_selects_the_option_it_names_and_nothing_else() {
         let options = json!([
@@ -117,6 +121,7 @@ mod tests {
         assert!(respond_action(5, &request, &Decision::Answers { answers: vec!["Keep the current schema".into(), "Migrate the schema".into()] }).is_err());
     }
 
+    // spec: antigravity.permissions/never-an-always-option
     #[test]
     fn a_request_without_allow_once_cannot_be_allowed() {
         let request = asked(DecisionKind::Permission, json!([{"optionId": "always", "name": "Always allow", "kind": "allow_always"}, {"optionId": "deny", "name": "Deny", "kind": "reject_once"}]));
@@ -124,6 +129,7 @@ mod tests {
         assert!(respond_action(4, &request, &Decision::Allow).is_err());
     }
 
+    // spec: antigravity.permissions/other-answers-are-refused
     #[test]
     fn superseded_and_other_answers_are_not_antigravitys_to_take() {
         let request = asked(DecisionKind::Permission, json!([{"optionId": "allow", "name": "Allow", "kind": "allow_once"}]));

@@ -535,6 +535,7 @@ fn a_provider_stands_as_its_best_account_and_the_whole_as_its_worst_provider() {
     assert!(worst(&[per_use]).is_none(), "only accounts paid per use: nothing to show");
 }
 
+// spec: antigravity.usage/usage-gauge-shows-antigravity
 #[test]
 fn codex_windows_count_as_its_week_and_its_session_by_how_long_they_last() {
     let codex = AccountStatus { provider: Provider::Codex, ..status("codex", AccountState::SignedIn, AccountBilling::Subscription { plan: None, weight: None }) };

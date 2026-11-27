@@ -10,6 +10,7 @@ fn default_account() -> AccountId { AccountId::default_account() }
 
 fn hold() -> serde_json::Value { serde_json::json!([[{"message": "Working on it"}, {"hold": {}}]]) }
 
+// spec: antigravity.nodes/turn-through-host-and-agy
 #[test]
 fn an_antigravity_node_runs_its_turn_through_the_real_host_and_agy() {
     let slice = Slice::new();
@@ -37,6 +38,7 @@ fn an_antigravity_node_runs_its_turn_through_the_real_host_and_agy() {
     driver.stop().unwrap();
 }
 
+// spec: antigravity.nodes/interrupt-cancels-the-prompt
 #[test]
 fn an_interrupt_cancels_the_prompt_and_ends_the_turn() {
     let slice = Slice::new();
@@ -51,6 +53,7 @@ fn an_interrupt_cancels_the_prompt_and_ends_the_turn() {
     driver.stop().unwrap();
 }
 
+// spec: antigravity.nodes/force-stop-ends-host-and-agy
 #[test]
 fn a_force_stop_ends_the_host_and_agy_with_it() {
     let slice = Slice::new();
@@ -64,6 +67,7 @@ fn a_force_stop_ends_the_host_and_agy_with_it() {
     assert!(processes.iter().all(|process| !alondra_process_group::alive(process).unwrap()), "nothing of the node runs after it stopped");
 }
 
+// spec: antigravity.nodes/restarted-daemon-adopts-the-host
 #[test]
 fn a_new_daemon_adopts_the_running_host_without_a_second_agy_or_prompt() {
     let slice = Slice::new();
@@ -80,6 +84,7 @@ fn a_new_daemon_adopts_the_running_host_without_a_second_agy_or_prompt() {
     adopted.stop().unwrap();
 }
 
+// spec: antigravity.nodes/dead-agy-resumes-the-session
 #[test]
 fn a_turn_whose_agy_died_resumes_the_same_session_in_a_new_host() {
     let slice = Slice::new();
@@ -102,6 +107,7 @@ fn a_turn_whose_agy_died_resumes_the_same_session_in_a_new_host() {
 
 /// An API key reaches only the agy of its account, from its file, through its environment: no
 /// file Alondra writes holds it.
+// spec: antigravity.nodes/key-reaches-only-its-agy
 #[test]
 fn an_api_key_reaches_only_its_accounts_agy_and_no_file_alondra_writes() {
     let slice = Slice::new();
@@ -137,6 +143,7 @@ fn key_digest(key: &str) -> serde_json::Value {
 
 /// The user removes the key while a node of the account works: its file goes, and the host that
 /// takes the node over after its agy ended starts no agy without a key, nor with the one removed.
+// spec: antigravity.nodes/removed-key-starts-no-later-agy
 #[test]
 fn a_key_removed_while_a_node_runs_reaches_no_later_agy() {
     let slice = Slice::new();

@@ -183,6 +183,7 @@ final class ViewModelsTests: XCTestCase {
         }
     }
 
+    // spec: antigravity.apps/provider-reads-from-the-wire
     func testEveryProviderNamesItselfAndDecodesFromTheWire() throws {
         XCTAssertEqual(try ["claude", "codex", "antigravity"].map { try JSONDecoder().decode(AccountProvider.self, from: Data("\"\($0)\"".utf8)).displayName }, ["Claude", "Codex", "Antigravity"])
         XCTAssertThrowsError(try JSONDecoder().decode(AccountProvider.self, from: Data(#""future""#.utf8))) {
@@ -190,6 +191,7 @@ final class ViewModelsTests: XCTestCase {
         }
     }
 
+    // spec: antigravity.apps/older-daemon-has-no-key-field
     func testAnAccountSaysWhetherItKeepsAKeyAndAnOlderDaemonsAccountHasNoKeyField() throws {
         let account = #"{"key":{"provider":"antigravity","account":"studio"},"position":1,"availability":{"text":"Signed in","tone":"success"},"active_nodes":0,"freshness":{"text":"Usage not reported","tone":"neutral"},"windows":[]"#
         let keyed = try JSONDecoder().decode(AccountPresentation.self, from: Data((account + #","credential":{"label":"Gemini API key","state":{"text":"Key set","tone":"success"},"set":true}}"#).utf8))
@@ -199,6 +201,7 @@ final class ViewModelsTests: XCTestCase {
         XCTAssertNil(try JSONDecoder().decode(AccountPresentation.self, from: Data((account + "}").utf8)).credential)
     }
 
+    // spec: antigravity.apps/provider-reads-from-the-wire
     func testAnAntigravityAccountLinkKeepsItsProviderAndIsNeverReadAsClaudes() throws {
         let json = #"{"kind":"local","local":{"kind":"account_sign_in","account":"work","command":"alondra accounts login work","provider":"antigravity","argv":["accounts","login","work"]}}"#
         let link = try JSONDecoder().decode(Link.self, from: Data(json.utf8))

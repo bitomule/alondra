@@ -4515,6 +4515,10 @@ for line in sys.stdin:
     /// (Alondra's home with its journal and logs, the user's home, the hosts' state) and the
     /// accounts screen hold no trace of it. One that comes through the relay waits, as a local one
     /// does, for the account settings another change holds. Removing it removes the file.
+    // spec: antigravity.apps/route-saves-the-key-to-its-file-only
+    // spec: antigravity.apps/route-removes-the-key
+    // spec: antigravity.apps/route-refuses-a-key-for-the-default-account
+    // spec: antigravity.key-file/key-reaches-only-its-agy
     #[tokio::test]
     async fn an_antigravity_key_goes_to_its_file_and_its_own_agy_only() {
         use std::os::unix::fs::PermissionsExt as _;

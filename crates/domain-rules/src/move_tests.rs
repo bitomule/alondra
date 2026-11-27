@@ -358,6 +358,7 @@ fn a_task_whose_account_used_up_its_session_is_out_of_quota_while_its_turn_still
 }
 
 /// Antigravity accounts run nodes: a task moves to one whose catalog offers a model.
+// spec: antigravity.nodes/task-moves-to-antigravity
 #[test]
 fn a_task_moves_to_an_antigravity_account() {
     let mut s = on_codex();
@@ -375,6 +376,7 @@ fn a_task_moves_to_an_antigravity_account() {
 
 /// The key of a named Antigravity account changes while other commits land: its record is judged
 /// on the domain as it stands, so it never fails as stale after the key was already written.
+// spec: antigravity.nodes/key-change-recorded-against-the-current-state
 #[test]
 fn a_credential_change_is_recorded_whatever_committed_since_it_was_read() {
     let mut s = on_codex();

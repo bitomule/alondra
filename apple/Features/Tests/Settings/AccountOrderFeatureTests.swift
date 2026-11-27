@@ -28,6 +28,7 @@ final class AccountOrderFeatureTests: XCTestCase {
         return state
     }
 
+    // spec: antigravity.apps/provider-reads-from-the-wire
     func testAnAntigravityAccountRowDecodesAndIsNamedAfterItsProvider() throws {
         let accounts = try state(providers: ["antigravity", "claude"]).accountRows.compactMap(\.account)
         XCTAssertEqual(accounts.map(\.key.provider), [.antigravity, .claude])

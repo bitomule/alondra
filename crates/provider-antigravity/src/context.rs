@@ -100,14 +100,18 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    // spec: antigravity.turns/a-session-that-never-opened-names-its-step
     #[test]
     fn a_session_that_never_opened_names_the_step_agy_did_not_answer() {
         let failure = failure_of(&json!({"method": "alondra/transportFailed", "params": {"code": "native_initialization_timeout", "step": "session_new"}})).unwrap();
         assert_eq!(failure.to_string(), "native_initialization_timeout at session_new");
-        assert_eq!(failure_of(&json!({"method": "alondra/transportFailed", "params": {"code": "native_process_exited"}})).unwrap().step, None);
+        let stepless = failure_of(&json!({"method": "alondra/transportFailed", "params": {"code": "native_process_exited"}})).unwrap();
+        assert_eq!(stepless.step, None);
+        assert_eq!(stepless.to_string(), "native_process_exited");
         assert_eq!(failure_of(&json!({"method": "alondra/accountBlocked", "params": {"code": "authentication_required"}})), None);
     }
 
+    // spec: antigravity.turns/refusal-holds-only-before-agy-took-the-input
     #[test]
     fn only_a_refusal_that_lasts_holds_the_task_and_only_before_agy_took_the_input() {
         let refused = |method: &str, code: &str, submitted: bool| refusal_of(&json!({"method": method, "params": {"code": code, "nativeSubmitted": submitted}}));
@@ -122,6 +126,7 @@ mod tests {
         assert_eq!(refused("alondra/transportFailed", "authentication_required", false), None);
     }
 
+    // spec: antigravity.turns/only-a-refused-sign-in-asks-to-sign-in
     #[test]
     fn only_a_refused_sign_in_or_key_asks_to_sign_in() {
         assert!(signed_out_of(&json!({"method": "alondra/accountBlocked", "params": {"code": "authentication_required"}})));
@@ -130,6 +135,7 @@ mod tests {
         assert!(!signed_out_of(&json!({"method": "alondra/inputRefused", "params": {"code": "authentication_required", "nativeSubmitted": true}})));
     }
 
+    // spec: antigravity.turns/every-code-has-its-message
     #[test]
     fn every_code_the_host_and_the_normalizer_report_has_its_message() {
         for code in [

@@ -33,6 +33,7 @@ impl std::fmt::Display for LevelRefused {
 mod tests {
     use super::*;
 
+    // spec: antigravity.models/levels-read-as-efforts
     #[test]
     fn each_effort_is_the_level_of_the_same_name_and_xhigh_is_extra() {
         let neon = ["low", "medium", "high", "xhigh"];
@@ -45,6 +46,7 @@ mod tests {
         assert_eq!(effort_of("xhigh"), "xhigh");
     }
 
+    // spec: antigravity.models/levels-read-as-efforts
     #[test]
     fn a_level_id_outside_the_table_is_kept_as_it_is() {
         assert_eq!(effort_of("minimal"), "minimal");

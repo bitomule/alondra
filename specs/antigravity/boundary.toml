@@ -1,0 +1,100 @@
+id = "antigravity"
+owns = [
+  "crates/provider-antigravity/**",
+  "crates/antigravity-protocol/**",
+  "agent-host/antigravity-main.ts",
+  "agent-host/antigravity-session.ts",
+  "agent-host/antigravity-session.test.mjs",
+  "agent-host/fake-agy-acp.mjs",
+  "crates/core/src/antigravity_account.rs",
+  "crates/core/src/antigravity_account_tests.rs",
+  "crates/core/fixtures/antigravity-credentials.json",
+  "crates/system/src/antigravity_account.rs",
+  "crates/system/src/antigravity_account_tests.rs",
+  "crates/daemon-engine/src/antigravity_accounts.rs",
+  "crates/engine-live/src/antigravity_live.rs",
+  "crates/engine-live/src/antigravity_readings.rs",
+  "crates/engine-sdk/src/sdk_owner/antigravity_tests.rs",
+  "crates/engine-sdk/src/sdk_owner/antigravity_fixtures.rs",
+  "crates/provider-conformance/transcripts/antigravity/**",
+  "crates/scenarios/cases/antigravity-*/**",
+  "crates/scenarios/src/antigravity_peer.rs",
+]
+fixtures = [
+  "agent-host/fake-agy-acp.mjs",
+  "crates/core/fixtures/antigravity-credentials.json",
+  "crates/provider-conformance/transcripts/antigravity/**",
+  "crates/scenarios/cases/antigravity-*/**",
+]
+
+[[suite]]
+id = "host"
+run = ["bazelisk", "test", "//agent-host:antigravity_session_test"]
+tests = ["agent-host/antigravity-session.test.mjs"]
+timeout_minutes = 30
+
+[[suite]]
+id = "provider"
+run = ["bazelisk", "test", "//crates/provider-antigravity:provider_antigravity_test"]
+tests = ["crates/provider-antigravity/src/**/*.rs"]
+timeout_minutes = 30
+
+[[suite]]
+id = "accounts"
+run = ["bazelisk", "test", "//crates/core:alondra_core_test", "//crates/system:system_test"]
+tests = [
+  "crates/core/src/antigravity_account_tests.rs",
+  "crates/core/src/model_selection.rs",
+  "crates/core/src/options.rs",
+  "crates/core/src/usage_tests.rs",
+  "crates/system/src/antigravity_account_tests.rs",
+  "crates/system/src/lib.rs",
+]
+timeout_minutes = 30
+
+[[suite]]
+id = "daemon"
+run = ["bazelisk", "test", "//crates/daemon-engine:daemon_engine_test"]
+tests = ["crates/daemon-engine/src/accounts_tests.rs", "crates/daemon-engine/src/usage_probe_tests.rs"]
+timeout_minutes = 30
+
+[[suite]]
+id = "domain"
+run = ["bazelisk", "test", "//crates/domain-rules:domain_rules_test", "//crates/engine-ports:engine_ports_test"]
+tests = ["crates/domain-rules/src/lifecycle_tests.rs", "crates/domain-rules/src/move_tests.rs", "crates/engine-ports/src/batch_hosts.rs"]
+timeout_minutes = 30
+
+[[suite]]
+id = "views"
+run = ["bazelisk", "test", "//crates/views:views_test", "//crates/daemon-server:daemon_server_test", "//crates/cli:cli_test"]
+tests = [
+  "crates/views/src/tests.rs",
+  "crates/daemon-server/src/views/actions.rs",
+  "crates/cli/src/provider_accounts_tests.rs",
+  "crates/cli/src/doctor/tests.rs",
+]
+timeout_minutes = 45
+
+[[suite]]
+id = "nodes"
+run = ["bazelisk", "test", "//crates/engine-sdk:engine_sdk_host_test", "--test_arg=antigravity_tests::"]
+tests = ["crates/engine-sdk/src/sdk_owner/antigravity_tests.rs"]
+timeout_minutes = 60
+
+[[suite]]
+id = "scenarios"
+run = ["bazelisk", "test", "//crates/scenarios:scenarios_test", "--test_arg=antigravity"]
+tests = ["crates/scenarios/cases/antigravity-*/scenario.toml"]
+timeout_minutes = 60
+
+[[suite]]
+id = "apps"
+run = ["bazelisk", "test", "//apple/Features:AlondraFeaturesTests", "//apple/Data/Feed:AlondraFeedTests", "//apple/Contract:AlondraContractTests"]
+tests = [
+  "apple/Features/Tests/Settings/AccountKeyFeatureTests.swift",
+  "apple/Features/Tests/Settings/AccountOrderFeatureTests.swift",
+  "apple/Data/Feed/Tests/AccountKeyIntentTests.swift",
+  "apple/Contract/Tests/ActionInputRedactionTests.swift",
+  "apple/Contract/Tests/ViewModelsTests.swift",
+]
+timeout_minutes = 60

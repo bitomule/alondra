@@ -22,12 +22,37 @@ low_opt_rust_test(
     deps = [":spec_engine"] + all_crate_deps(normal = True, normal_dev = True),
 )
 
+# Every package a component of `specs/` owns, tests in or takes evidence from: the engine
+# fingerprints and reads the markers of exactly the files it is handed.
+SPEC_PACKAGES = [
+    "//agent-host",
+    "//apple/Contract",
+    "//apple/Data/Feed",
+    "//apple/Features",
+    "//apple/Testing/MacSnapshots",
+    "//apple/Testing/Snapshots",
+    "//crates/antigravity-protocol",
+    "//crates/cli",
+    "//crates/core",
+    "//crates/daemon-engine",
+    "//crates/daemon-server",
+    "//crates/domain-rules",
+    "//crates/engine-live",
+    "//crates/engine-ports",
+    "//crates/engine-sdk",
+    "//crates/provider-antigravity",
+    "//crates/provider-conformance",
+    "//crates/scenarios",
+    "//crates/system",
+    "//crates/views",
+]
+
 REPOSITORY_FILES = [
     ":files",
     "//:alondra.toml",
     "//:spec_files",
     "//tools:public_surface.py",
-]
+] + [package + ":tree" for package in SPEC_PACKAGES]
 
 # The source paths the engine is handed when it validates this repository: a walk of the runfiles
 # would also list what Bazel builds.

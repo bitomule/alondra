@@ -460,6 +460,11 @@ mod tests {
         fold(&batch(), state, method, &params, &mut facts, &mut context, input).unwrap();
         facts.iter().map(|fact| format!("{fact:?}")).map(|fact| fact.split([' ', '{', '(']).next().unwrap().to_owned()).collect()
     }
+    fn observed(state: &mut Checkpoint, method: &str, params: Value) -> Vec<Observation> {
+        let mut facts = vec![];
+        fold(&batch(), state, method, &params, &mut facts, &mut vec![], input).unwrap();
+        facts
+    }
     fn update(update: Value) -> Value {
         json!({"sessionId": "session-1", "update": update})
     }
@@ -472,6 +477,7 @@ mod tests {
         facts
     }
 
+    // spec: antigravity.turns/session-updates-open-no-turn
     #[test]
     fn each_session_update_kind_of_a_turn() {
         let mut state = session();
@@ -490,6 +496,7 @@ mod tests {
         assert_eq!(step(&mut state, "session/update", update(json!({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "Again"}}))), ["TurnStarted", "ModelAnswered"], "the next turn answers again");
     }
 
+    // spec: antigravity.turns/stop-reasons
     #[test]
     fn each_stop_reason_ends_its_turn() {
         for (reason, outcome) in [
@@ -507,14 +514,17 @@ mod tests {
         }
     }
 
+    // spec: antigravity.turns/error-before-any-update-drops-the-input
     #[test]
     fn a_prompt_answered_with_an_error_before_any_update_drops_its_input() {
         let mut state = session();
         sent(&mut state);
-        assert_eq!(step(&mut state, "alondra/promptFailed", json!({"sessionId": "session-1", "inputId": INPUT, "turnId": "alondra:7", "error": {"code": -32603}})), ["InputDropped", "Reconciled"]);
+        let facts = observed(&mut state, "alondra/promptFailed", json!({"sessionId": "session-1", "inputId": INPUT, "turnId": "alondra:7", "error": {"code": -32603}}));
+        assert!(matches!(&facts[..], [Observation::InputDropped { .. }, Observation::Reconciled { idle: true, .. }]), "{facts:?}");
         assert!(state.prompt.is_none());
     }
 
+    // spec: antigravity.turns/errors-by-their-structured-data
     #[test]
     fn errors_with_and_without_structured_data() {
         let outcome = |error: Value| failed_outcome(&error).unwrap();
@@ -533,6 +543,7 @@ mod tests {
         assert_eq!(step(&mut state, "alondra/promptFailed", json!({"sessionId": "session-1", "inputId": INPUT, "turnId": "alondra:7", "error": {"code": -32603, "data": {"code": 429, "status": "RESOURCE_EXHAUSTED"}}})), ["TurnEnded", "Reconciled"]);
     }
 
+    // spec: antigravity.turns/api-failure-before-any-update-is-a-failed-turn
     #[test]
     fn a_model_api_failure_before_any_update_is_a_failed_turn_not_a_dropped_input() {
         for (data, error) in [(json!({"code": 429, "status": "RESOURCE_EXHAUSTED"}), "rate_limit"), (json!({"code": 401}), "authentication_failed"), (json!({"code": 503}), "api_error")] {
@@ -546,6 +557,7 @@ mod tests {
         }
     }
 
+    // spec: antigravity.turns/error-before-any-update-drops-the-input
     #[test]
     fn a_prompt_held_is_consumed_dropped_or_left_uncertain() {
         // Consumed: answered with a stop reason, even with nothing said first.
@@ -555,7 +567,8 @@ mod tests {
         // Dropped: answered with an error before any update.
         let mut dropped = session();
         sent(&mut dropped);
-        assert_eq!(step(&mut dropped, "alondra/promptFailed", json!({"sessionId": "session-1", "inputId": INPUT, "turnId": "alondra:7", "error": {"code": -32602}})), ["InputDropped", "Reconciled"]);
+        let facts = observed(&mut dropped, "alondra/promptFailed", json!({"sessionId": "session-1", "inputId": INPUT, "turnId": "alondra:7", "error": {"code": -32602}}));
+        assert!(matches!(&facts[..], [Observation::InputDropped { .. }, Observation::Reconciled { idle: true, .. }]), "{facts:?}");
         // Uncertain: the process died with the prompt held; nothing is decided about the input here,
         // and the next process's session forgets the turn.
         let mut uncertain = session();
@@ -565,6 +578,7 @@ mod tests {
         assert!(uncertain.prompt.is_none());
     }
 
+    // spec: antigravity.turns/prompt-of-a-dead-process
     #[test]
     fn a_prompt_answered_after_the_process_died_is_the_last_host_s() {
         let mut state = session();
@@ -574,21 +588,25 @@ mod tests {
         let mut other = session();
         sent(&mut other);
         let mut facts = vec![];
-        assert!(fold(&batch(), &mut other, "alondra/promptEnded", &json!({"sessionId": "session-1", "turnId": "alondra:9", "stopReason": "end_turn"}), &mut facts, &mut vec![], input).is_err(), "the answer of another prompt while one is open");
+        let answered = fold(&batch(), &mut other, "alondra/promptEnded", &json!({"sessionId": "session-1", "turnId": "alondra:9", "stopReason": "end_turn"}), &mut facts, &mut vec![], input);
+        assert!(matches!(answered, Err(AdapterError::InvalidObservation)), "the answer of another prompt while one is open: {answered:?}");
     }
 
+    // spec: antigravity.turns/turn-agy-opens-by-itself
     #[test]
     fn a_turn_agy_opens_by_itself_ends_when_its_model_call_reports_usage() {
         let mut state = session();
         assert_eq!(step(&mut state, "session/update", update(json!({"sessionUpdate": "user_message_chunk", "content": {"type": "text", "text": "Scheduled check"}}))), ["TurnUnprompted"]);
         assert_eq!(step(&mut state, "session/update", update(json!({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "Checked"}}))), ["ModelAnswered"]);
-        assert_eq!(step(&mut state, "session/update", update(json!({"sessionUpdate": "usage_update", "used": 900, "size": 1048576}))), ["TurnEnded", "Reconciled"]);
+        let facts = observed(&mut state, "session/update", update(json!({"sessionUpdate": "usage_update", "used": 900, "size": 1048576})));
+        assert!(matches!(&facts[..], [Observation::TurnEnded { .. }, Observation::Reconciled { idle: true, .. }]), "{facts:?}");
         assert_eq!(step(&mut state, "session/update", update(json!({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "Again"}}))), ["TurnUnprompted", "ModelAnswered"]);
         assert_eq!(step(&mut state, "alondra/promptSent", json!({"sessionId": "session-1", "inputId": INPUT, "turnId": "alondra:7"})), ["TurnEnded", "Reconciled", "InputHeld"], "a prompt of Alondra's closes it");
     }
 
     /// No pull request is taken from a command's text or output; a closed one only tells the
     /// task to read its pull requests again.
+    // spec: antigravity.turns/pull-requests-only-from-a-successful-close
     #[test]
     fn no_pull_request_is_taken_from_a_commands_text_or_output() {
         let finished = |command: &str, exit: i64, output: &str| {
@@ -604,13 +622,15 @@ mod tests {
         };
         let output = "Command output:\nhttps://github.com/acme/storefront/pull/6\n";
         let plain = finished("make test", 0, output);
+        assert!(!plain.contains(&Observation::PullRequestsChanged), "a command's output naming a pull request changes none");
         for command in ["gh pr create --fill", "make test && gh pr create --fill", "gh pr view 6"] {
             assert_eq!(finished(command, 0, output), plain, "{command}");
         }
         assert!(finished("gh pr close 6", 0, "").contains(&Observation::PullRequestsChanged));
-        assert!(!finished("gh pr close 6", 1, "").contains(&Observation::PullRequestsChanged), "a failed close changed nothing");
+        assert!(!finished("gh pr close 6", 1, output).contains(&Observation::PullRequestsChanged), "a failed close changed nothing");
     }
 
+    // spec: antigravity.turns/updates-of-another-session-ignored
     #[test]
     fn updates_of_another_session_are_not_this_task_s() {
         let mut state = session();
@@ -624,6 +644,7 @@ mod tests {
         assert!(!of_this_session(&state, &chunk(json!("session-1"))), "nothing is routed before a session opens");
     }
 
+    // spec: antigravity.turns/reconciled-work-is-antigravitys
     #[test]
     fn a_reconciled_antigravity_work_is_noticed_as_antigravity_s() {
         let named = |work: &str| alondra_provider_contract::reconciled_continuation(&alondra_foundation::WorkId::new(work).unwrap()).as_str().to_owned();

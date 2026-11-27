@@ -1176,6 +1176,7 @@ mod node_limit_tests {
         assert!(with_node_limit("[defaults\n", NodeLimit::Fixed(2)).is_err());
     }
 
+    // spec: antigravity.models/request-offers-antigravity-accounts
     #[test]
     fn a_request_is_offered_the_antigravity_accounts_beside_the_claude_ones() {
         use crate::accounts::{AccountChange, Provider};

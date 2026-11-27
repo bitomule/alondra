@@ -12,11 +12,13 @@ fn inherited() -> BTreeMap<String, String> {
     ].into_iter().map(|(key, value)| (key.to_owned(), value.to_owned())).collect()
 }
 
+// spec: antigravity.accounts/access-sets-its-own-environment
 #[test]
 fn every_launch_drops_the_inherited_credentials_and_sets_only_the_accounts_own() {
     let folder = Path::new("/Users/ana/.alondra/provider-accounts/antigravity/work");
     for access in Access::ALL {
-        let settings = Settings { access, project: access.takes_project().then(|| "demo-project".into()), location: access.takes_project().then(|| "europe-west1".into()), credentials_file: None };
+        let takes_project = matches!(access, Access::Enterprise | Access::CloudProject);
+        let settings = Settings { access, project: takes_project.then(|| "demo-project".into()), location: takes_project.then(|| "europe-west1".into()), credentials_file: None };
         for (folder, key) in [(None, None), (Some(folder), None), (Some(folder), Some("own-key"))] {
             let launch = launch(&inherited(), Path::new("/Users/ana"), &settings, folder, key, true);
             let env = &launch.environment;
@@ -28,18 +30,19 @@ fn every_launch_drops_the_inherited_credentials_and_sets_only_the_accounts_own()
             assert_eq!(env["LANG"], "es_ES.UTF-8");
             assert_eq!(env.get("GEMINI_HOME").map(String::as_str), folder.and_then(Path::to_str));
             assert_eq!(launch.args.is_empty(), folder.is_none());
-            let file_storage = folder.is_some() && access.signs_in_with_google();
+            let file_storage = folder.is_some() && matches!(access, Access::Google | Access::Enterprise);
             assert_eq!(env.get("AGY_ACP_FORCE_FILE_STORAGE").is_some(), file_storage, "{access:?}");
-            assert_eq!(env.get("SSH_CONNECTION").map(String::as_str), file_storage.then_some(FILE_STORAGE_SSH_CONNECTION));
+            assert_eq!(env.get("SSH_CONNECTION").map(String::as_str), file_storage.then_some("127.0.0.1 0 127.0.0.1 0"));
             assert_eq!(env.get("GEMINI_API_KEY").map(String::as_str), (access == Access::ApiKey).then_some(key).flatten());
             assert_eq!(env.get("GOOGLE_API_KEY").map(String::as_str), (access == Access::CloudProject).then_some(key).flatten());
             assert_eq!(env.get("AGY_ADC_AUTH").is_some(), access == Access::CloudProject && key.is_none());
-            assert_eq!(env.get("GOOGLE_CLOUD_QUOTA_PROJECT").is_some(), access.takes_project());
-            assert_eq!(env.get("GOOGLE_CLOUD_LOCATION").is_some(), access.takes_project());
+            assert_eq!(env.get("GOOGLE_CLOUD_QUOTA_PROJECT").is_some(), takes_project, "{access:?}");
+            assert_eq!(env.get("GOOGLE_CLOUD_LOCATION").is_some(), takes_project, "{access:?}");
         }
     }
 }
 
+// spec: antigravity.accounts/service-account-file-only-with-adc
 #[test]
 fn a_cloud_account_names_its_service_account_file_only_with_adc() {
     let settings = Settings { access: Access::CloudProject, project: Some("demo".into()), location: None, credentials_file: Some("/Users/ana/keys/sa.json".into()) };
@@ -49,8 +52,11 @@ fn a_cloud_account_names_its_service_account_file_only_with_adc() {
     assert!(!keyed.environment.contains_key("GOOGLE_APPLICATION_CREDENTIALS"));
     let usage = launch(&BTreeMap::new(), Path::new("/Users/ana"), &settings, Some(Path::new("/tmp/a")), None, false);
     assert!(usage.args.is_empty(), "only agy acp takes --gemini-dir");
+    let acp = launch(&BTreeMap::new(), Path::new("/Users/ana"), &settings, Some(Path::new("/tmp/a")), None, true);
+    assert_eq!(acp.args, ["--gemini-dir", "/tmp/a"]);
 }
 
+// spec: antigravity.accounts/sign-in-command-shown
 #[test]
 fn each_access_has_its_sign_in_command() {
     let google = Settings::of(Access::Google);
@@ -66,6 +72,7 @@ fn each_access_has_its_sign_in_command() {
     assert_eq!(crate::accounts::sign_in_command(Provider::Antigravity, None), "agy acp --login");
 }
 
+// spec: antigravity.accounts/settings-refuse-what-the-access-does-not-take
 #[test]
 fn settings_refuse_what_their_access_does_not_take() {
     assert!(Settings::of(Access::Google).check().is_ok());
@@ -78,6 +85,7 @@ fn settings_refuse_what_their_access_does_not_take() {
     assert!(Settings { project: Some("demo".into()), location: Some("global".into()), credentials_file: Some("/Users/ana/sa.json".into()), ..Settings::of(Access::CloudProject) }.check().is_ok());
 }
 
+// spec: antigravity.accounts/pay-per-use-follows-the-access
 #[test]
 fn billing_follows_the_access_unless_the_user_sets_it() {
     for (access, paid) in [(Access::Google, false), (Access::Enterprise, false), (Access::ApiKey, true), (Access::CloudProject, true)] {
@@ -86,6 +94,7 @@ fn billing_follows_the_access_unless_the_user_sets_it() {
     }
 }
 
+// spec: antigravity.accounts/older-options-still-read
 #[test]
 fn the_section_decodes_without_antigravity_and_round_trips_with_it() {
     let old: AccountsConfig = toml::from_str::<toml::Table>("[accounts]\nconnected = [\"claude\"]\n").unwrap()["accounts"].clone().try_into().unwrap();
@@ -102,6 +111,7 @@ fn the_section_decodes_without_antigravity_and_round_trips_with_it() {
     assert!(crate::options::OptionsFile::parse(&text.replace("access = \"api_key\"", "access = \"api_key\"\nkey = \"secret\"")).is_err(), "a key never goes in options.toml");
 }
 
+// spec: antigravity.accounts/api-key-account-is-always-named
 #[test]
 fn adding_an_account_keeps_its_access_and_an_api_key_one_is_always_named() {
     let config = AccountsConfig::fresh();
@@ -121,6 +131,7 @@ fn adding_an_account_keeps_its_access_and_an_api_key_one_is_always_named() {
     assert!(default_key.check().is_err(), "the default account is agy's own sign-in");
 }
 
+// spec: antigravity.accounts/named-account-has-a-private-folder
 #[test]
 fn a_named_account_has_a_private_folder_of_its_own() {
     let home = Path::new("/Users/ana/.alondra");
@@ -132,6 +143,7 @@ fn a_named_account_has_a_private_folder_of_its_own() {
     assert_eq!(AccountKey::parse_wire("antigravity/work").unwrap(), key);
 }
 
+// spec: antigravity.account-check/supported-versions
 #[test]
 fn versions_below_the_minimum_are_refused() {
     assert_eq!(Version::parse("1.5.14\n"), Some(Version(1, 5, 14)));
@@ -143,6 +155,7 @@ fn versions_below_the_minimum_are_refused() {
     assert_eq!(Version::parse("no version"), None);
 }
 
+// spec: antigravity.models/model-family
 #[test]
 fn a_model_belongs_to_the_family_its_id_names() {
     assert_eq!(model_family("gemini-4-neon"), "gemini-4");
@@ -152,6 +165,7 @@ fn a_model_belongs_to_the_family_its_id_names() {
     assert_eq!(crate::model_table::measured_key(Provider::Antigravity, "antigravity/gemini-4-carbon"), "gemini-4");
 }
 
+// spec: antigravity.models/levels-read-as-efforts
 #[test]
 fn thinking_levels_map_to_efforts_and_back() {
     assert_eq!(effort_of("extra"), "xhigh");
@@ -163,6 +177,7 @@ fn thinking_levels_map_to_efforts_and_back() {
     assert_eq!(level_for("max", &offered), None);
 }
 
+// spec: antigravity.models/catalog-from-select-options
 #[test]
 fn the_catalog_reads_the_sessions_select_options() {
     let options = json!([
@@ -180,6 +195,8 @@ fn the_catalog_reads_the_sessions_select_options() {
     assert!(select_option(&options, "mode").is_none());
 }
 
+// spec: antigravity.usage/one-window-per-pool
+// spec: antigravity.usage/account-stops-when-every-pool-ran-out
 #[test]
 fn usage_has_one_window_per_pool_and_the_account_stops_once_every_pool_ran_out() {
     use crate::usage::record;
@@ -208,6 +225,7 @@ fn usage_has_one_window_per_pool_and_the_account_stops_once_every_pool_ran_out()
     assert_eq!(crate::usage::margin_returns_at(Provider::Antigravity, std::slice::from_ref(&status), std::slice::from_ref(&some), 1), None);
 }
 
+// spec: antigravity.usage/utc-times
 #[test]
 fn utc_times_read_as_milliseconds() {
     assert_eq!(parse_utc("1970-01-01T00:00:00Z"), Some(0));
@@ -217,6 +235,7 @@ fn utc_times_read_as_milliseconds() {
     assert_eq!(parse_utc("2026-11-22 10:00:00"), None);
 }
 
+// spec: antigravity.key-file/never-printed
 #[test]
 fn a_launch_never_prints_its_key() {
     let launch = launch(&BTreeMap::new(), Path::new("/Users/ana"), &Settings::of(Access::ApiKey), Some(Path::new("/tmp/a")), Some("AIza-secret"), true);
@@ -224,6 +243,7 @@ fn a_launch_never_prints_its_key() {
     assert!(!printed.contains("AIza-secret") && printed.contains("GEMINI_API_KEY"), "{printed}");
 }
 
+// spec: antigravity.usage/utc-times
 #[test]
 fn utc_times_out_of_range_or_signed_are_refused() {
     assert_eq!(parse_utc("2026-11-22T-1:00:00Z"), None);
@@ -231,15 +251,17 @@ fn utc_times_out_of_range_or_signed_are_refused() {
     assert_eq!(parse_utc("1969-12-31T23:59:59Z"), None);
 }
 
+// spec: antigravity.usage/colliding-pool-names
 #[test]
 fn pools_whose_names_collide_keep_a_window_each() {
     let reading = parse_usage(&json!({"groups": [{"name": "All Models", "buckets": [
         {"id": "claude-opus-4-5-thinking-max", "remaining_fraction": 0.5, "reset_time": "2030-01-01T00:00:00Z"},
         {"id": "claude-opus-4-5-thinking-low", "remaining_fraction": 0.0, "reset_time": "2030-01-02T00:00:00Z"}]}]})).unwrap();
     assert_eq!(reading.windows.len(), 2, "{:?}", reading.windows);
-    assert!(reading.windows.iter().any(|window| window.exhausted));
+    assert_eq!(reading.windows.iter().filter(|window| window.exhausted).count(), 1, "only the pool with nothing left ran out: {:?}", reading.windows);
 }
 
+// spec: antigravity.usage/reset-passed-has-room
 #[test]
 fn a_pool_whose_reset_passed_has_room_again() {
     let reading = parse_usage(&json!({"groups": [{"name": "All Models", "buckets": [
@@ -250,6 +272,7 @@ fn a_pool_whose_reset_passed_has_room_again() {
     assert!(!measured.plan_exhausted(after_gemini_reset), "Gemini's pool reset, so the account has room even with Claude's spent");
 }
 
+// spec: antigravity.accounts/last-account-on
 #[test]
 fn an_antigravity_account_stays_on_as_the_last_one_that_runs_nodes() {
     let mut alone = AccountsConfig::fresh();
@@ -264,6 +287,8 @@ fn an_antigravity_account_stays_on_as_the_last_one_that_runs_nodes() {
 
 /// The list the Antigravity host strips is this one, and a key file's text reads by one rule on
 /// both sides: `fixtures/antigravity-credentials.json` holds both, and the host's tests read it too.
+// spec: antigravity.key-file/one-rule-for-daemon-and-host
+// spec: antigravity.key-file/same-credential-variables
 #[test]
 fn the_host_and_the_daemon_share_the_credential_variables_and_the_key_file_rule() {
     let rules: serde_json::Value = serde_json::from_str(include_str!("../fixtures/antigravity-credentials.json")).unwrap();
