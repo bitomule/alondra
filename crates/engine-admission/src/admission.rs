@@ -1059,6 +1059,15 @@ fn turns_held_for_disk(state: &DomainState) -> impl Iterator<Item = TaskId> + '_
         .filter(|task| state.lifecycle_of(task).is_ok_and(|lifecycle| matches!(lifecycle.activity(), alondra_domain::ActivityView::Working | alondra_domain::ActivityView::OwnWork)))
 }
 
+/// Whether an owner of this daemon runs the host of `task`'s node. A turn the disk's floor held goes
+/// on only while one does: a host that died in the middle of it leaves the task reading as working
+/// with nothing to end that turn, so its node comes back through the queue once the disk has room,
+/// and the takeover its resume starts either brings the session back or puts the card that says it
+/// could not.
+fn host_runs(domain: &dyn Runtime, state: &DomainState, task: &TaskId) -> bool {
+    state.tasks.get(task).and_then(|task| task.agent_id.as_ref()).is_some_and(|agent| domain.hosts().owns(agent))
+}
+
 /// `working_tasks` with the project each one works on.
 pub fn working_projects(domain: &dyn Runtime, state: &DomainState) -> BTreeMap<TaskId, Option<String>> {
     projects_of(state, working_tasks(domain, state).iter())
@@ -1207,7 +1216,7 @@ fn snapshot_locked(domain: &dyn Runtime, state: &DomainState, inner: &Inner, que
     let usage_clear = !domain.engine().usage_paused();
     let probe = alondra_engine_ports::api::outage_probe(&inner.saved.pauses.paused, domain.engine().api_watch(), now);
     let resumed = &inner.saved.pauses.resumed;
-    let held_turns: BTreeSet<TaskId> = turns_held_for_disk(state).collect();
+    let held_turns: BTreeSet<TaskId> = turns_held_for_disk(state).filter(|task| host_runs(domain, state, task)).collect();
     let returning = inner.saved.pauses.paused.iter()
         .filter(|(_, paused)| !(paused.reason == Reason::Disk && held_turns.contains(&paused.task)))
         .filter(|(session, _)| inner.refused.get(*session).is_none_or(|refused| lifecycle_revision(state, session) != Some(*refused)))

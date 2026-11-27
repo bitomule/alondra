@@ -51,6 +51,10 @@ disk reading and the next node do. When nothing but the next node reserves a dis
 that disk's line (5 GB, plus the 2 GB recovery margin once the disk was short), whatever its
 estimate, so one node can always work while the disk stays over its line. The floor that holds the
 next turns of all but the lightest node and the disk card remain the backstop if it fills the disk.
+A node the floor held comes back through the queue once its turn ends, or as soon as the disk has
+room when no host of the daemon runs that turn any more: a host that died in the middle of it
+leaves the task reading as working with nothing to end the turn. Its resume takes the session over,
+or puts the card to try again or cancel the task when that fails.
 
 ## What counts as an active node
 

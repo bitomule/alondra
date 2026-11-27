@@ -412,6 +412,47 @@ async fn a_host_that_dies_under_a_disk_hold_while_its_turn_runs_never_leaves_its
 }
 
 #[cfg(not(feature = "real-hosts"))]
+/// #726: the disk fell under its floor while the node's turn ran, and its host died in the middle
+/// of that turn. No takeover could record the host's end, so the task still read as working, with
+/// no host; the node was paused, so its owner put no card and waited for the pause to end. Once the
+/// disk had room the gate still counted that dead turn as running and kept the pause: the task read
+/// «Disk space · resumes by itself» for hours, through a restart too. A held turn no host runs now
+/// comes back once the disk has room, and the takeover that follows puts the card to try again
+/// when it fails.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_disk_hold_whose_host_died_mid_turn_ends_once_there_is_room_and_a_failed_takeover_puts_its_card() {
+    super::wired();
+    const GB: u64 = 1_000_000_000;
+    let mut node = SdkNode::working();
+    let domain = Arc::clone(&node.domain);
+    domain.admission().tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(6)) });
+    domain.machine_watch().measure_disk(alondra_engine_ports::disk::Space { free: GB, purgeable: 0, total: 500 * GB });
+    assert!(domain.admission().hold_back(&*domain, &node.agent(), Reason::Disk, alondra_core::now_millis()));
+    node.lose_host();
+    assert_eq!(node.lifecycle().activity(), alondra_domain::ActivityView::Working, "the dead turn still reads as running");
+
+    domain.machine_watch().measure_disk(alondra_engine_ports::disk::Space { free: 60 * GB, purgeable: 0, total: 500 * GB });
+    let queue: Vec<Key> = node.gate().queue.into_iter().map(|waiting| waiting.key).collect();
+    assert!(queue.contains(&Key::Resume(node.agent())), "no host runs the held turn: its node comes back once the disk has room: {queue:?}");
+
+    struct NoNewHost(PathBuf);
+    impl NoNewHost {
+        fn set(&self, refused: bool) {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(if refused { 0o500 } else { 0o700 })).unwrap();
+        }
+    }
+    impl Drop for NoNewHost { fn drop(&mut self) { self.set(false); } }
+    let no_new_host = NoNewHost(domain.sdk().unwrap().0.state_root.clone());
+    no_new_host.set(true);
+    node.gate_look().await;
+    domain.join_retakes();
+    assert!(domain.admission().paused(&*domain, &node.agent()).is_none(), "the pause ended once the disk had room");
+    assert!(node.host_lost_card().is_some(), "the takeover that failed says so on a card: {:?}", node.lifecycle().activity());
+    domain.stop_sdk_owners();
+}
+
+#[cfg(not(feature = "real-hosts"))]
 /// Production, 2026-11-08 (t-agents-md-review-public-audit, t-security-audit-local-daemon and
 /// t-usage-limit-no-cards): each read as working with no host, and every gate pass tried to take it
 /// over and failed on the same observation of its ended host, for good. Here the host ends its turn

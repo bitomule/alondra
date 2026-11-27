@@ -1735,8 +1735,16 @@ truth = ["derived"]
 
 | From | Event [guard] | To | Effect |
 |---|---|---|---|
-| paused | `returns()` / `resumed` | queued as `Key::Resume` | |
+| paused | `returns()` / `resumed` [not a `Disk` pause whose turn an owned host still runs] | queued as `Key::Resume` | |
 | queued | admitted | running | `resume_locked` removes the pause; `hand_pauses` emits `Resumed` |
+
+- **A `Disk` pause and the turn it lets end**: the floor holds only the next turn, so a `Disk` pause
+  whose task reads `Working` or `OwnWork` stays out of the queue while that turn runs
+  (`turns_held_for_disk`). It counts as running only while an owner of this daemon runs the node's
+  host (`host_runs`, `admission.rs`). A host that died mid-turn leaves the task reading `Working` with
+  nothing to end it, and the SDK owner gives up quietly on a paused node (`give_up`): that pause goes
+  back to the queue, the disk's room admits it, and `hand_pauses`' `Resumed` takes the session over
+  (`take_if_unowned`), or puts the host-lost card when that fails (#726).
 
 - **Divergences observed**:
   - on SDK nodes, `hand_pauses` does not forward `PauseCleanup` or `PauseReleased` to the domain (`:752`), so
