@@ -71,16 +71,25 @@ fn stage_steps_in(database: &std::path::Path) -> Vec<String> {
     statement.query_map([TASK], |row| row.get(0)).unwrap().map(Result::unwrap).collect()
 }
 
-/// Whether the change of role is done as the daemon sees it. The daemon reads the journal under the
-/// writer lock it holds from a commit until its publication; a connection of its own sees the
-/// commit before the domain publishes it. So the change is done once its last step is committed
-/// and the published state holds every command committed with it.
+/// Whether the change of role's last step is committed. Once it is, a look finds no change
+/// pending, whatever the published state still says.
+fn finished(database: &std::path::Path) -> bool {
+    stage_steps_in(database).iter().any(|step| step == "done")
+}
+
+/// The revision of the last command committed, published or not.
+fn committed(database: &std::path::Path) -> u64 {
+    let revision: Option<i64> = rusqlite::Connection::open(database).unwrap()
+        .query_row("SELECT max(revision) FROM command_audit", [], |row| row.get(0)).unwrap();
+    revision.map_or(0, |revision| u64::try_from(revision).unwrap())
+}
+
+/// Whether the change of role is done as the daemon sees it. A connection of its own sees a commit
+/// before the domain publishes it, so the change is done once its last step is committed and the
+/// published state holds every command committed with it.
 fn handed(database: &std::path::Path, domain: &DomainRuntime) -> bool {
     let published = domain.read().state().revision;
-    let (done, committed): (bool, Option<i64>) = rusqlite::Connection::open(database).unwrap().query_row(
-        "SELECT EXISTS(SELECT 1 FROM provider_transition_steps WHERE task_id=?1 AND phase='done'), (SELECT max(revision) FROM command_audit)",
-        [TASK], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
-    done && committed.is_none_or(|committed| u64::try_from(committed).unwrap() <= published)
+    finished(database) && committed(database) <= published
 }
 
 fn admissions(domain: &DomainRuntime) -> usize {
@@ -159,17 +168,18 @@ async fn handing_over(slice: &Slice) -> AgentId {
 }
 
 /// Looks at the change of role after every change, as the daemon's transition loop does, until
-/// it is done. A look that fails or aborts it fails the test with the steps it reached.
+/// its last step is committed, then waits for the domain to publish what was committed by then.
+/// A look that fails or aborts it before that step fails the test with the steps it reached.
 async fn handed_over(slice: &Slice, domain: &Arc<DomainRuntime>) {
     handed_over_checking(slice, domain, Changes::of(domain)).await
 }
 
 async fn handed_over_checking(slice: &Slice, domain: &Arc<DomainRuntime>, mut changes: Changes) {
-    let done = || handed(&slice.database, domain);
+    let done = || finished(&slice.database);
     let handing = async {
         while !done() {
             let looked = look(domain).await;
-            if done() { return }
+            if done() { break }
             match looked {
                 Ok(Phase::Aborted) => panic!("the change of role was aborted after {:?}", stage_steps(slice)),
                 Ok(_) => {}
@@ -181,6 +191,8 @@ async fn handed_over_checking(slice: &Slice, domain: &Arc<DomainRuntime>, mut ch
     if tokio::time::timeout(std::time::Duration::from_secs(60), handing).await.is_err() {
         panic!("the change of role never ended: {:?}, {:?}", stage_steps(slice), Slice::lifecycle(&**domain).activity());
     }
+    let ended = committed(&slice.database);
+    changes.until("the publication of the change of role's end", || domain.read().state().revision >= ended).await;
 }
 
 /// Looks at the change of role until it stops at `stop`, past the author's drain.
@@ -250,6 +262,7 @@ async fn a_change_of_role_reads_as_done_only_once_its_selection_is_published() {
     assert!(!between.is_empty(), "the last step is committed before the selection it clears is published");
     assert!(between.iter().all(|done| !done), "a look before the publication reads the change of role as done");
     assert!(slice.domain.state().unwrap().tasks[&task].pending_selection.is_none());
+    assert!(look(&slice.domain).await.is_err(), "once its last step is committed a look finds no change of role pending, so looking stops on the journal");
     slice.domain.stop_sdk_owners();
 }
 
