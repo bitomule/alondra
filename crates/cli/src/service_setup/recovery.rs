@@ -458,79 +458,90 @@ mod tests {
             .unwrap();
         assert_eq!(state, "executing");
     }
-    #[test]
-    fn every_interruption_resumes_same_generation_without_old_bindings() {
-        for phase in [
-            "prepared",
-            "before_register",
-            "after_register",
-            "enrolled",
-            "approvals_removed",
-            "config_published",
-            "committed",
-        ] {
-            let fixture = fixture();
-            let home = &fixture.0;
-            let _lock = HomeLock::recovery(home).unwrap();
-            let op = prepare(home, false).unwrap();
-            let id = op.id.clone();
-            let old: ServiceConfig = toml::from_str(&op.old_config).unwrap();
-            let expected: ServiceConfig = toml::from_str(&op.new_config).unwrap();
-            assert_ne!(old.mac_id, expected.mac_id);
-            let mut calls = Vec::new();
-            let mut registrar = |identity: &PublicMac, _: &SigningKey| {
-                calls.push(identity.mac_id.clone());
-                Ok(())
-            };
-            let result = execute(home, "owner", op, &mut registrar, &mut |point| {
-                if point == phase {
-                    bail!("injected interruption")
-                }
-                Ok(())
-            });
-            assert!(result.is_err());
-            let pending = read_operation(home).unwrap().unwrap();
-            assert_eq!(pending.id, id);
-            if phase != "committed" {
-                assert!(alondra_core::home_lock::ensure_ready(home).is_err());
+    fn interruption_resumes_same_generation_without_old_bindings(phase: &str) {
+        let fixture = fixture();
+        let home = &fixture.0;
+        let _lock = HomeLock::recovery(home).unwrap();
+        let op = prepare(home, false).unwrap();
+        let id = op.id.clone();
+        let old: ServiceConfig = toml::from_str(&op.old_config).unwrap();
+        let expected: ServiceConfig = toml::from_str(&op.new_config).unwrap();
+        assert_ne!(old.mac_id, expected.mac_id);
+        let mut calls = Vec::new();
+        let mut registrar = |identity: &PublicMac, _: &SigningKey| {
+            calls.push(identity.mac_id.clone());
+            Ok(())
+        };
+        let result = execute(home, "owner", op, &mut registrar, &mut |point| {
+            if point == phase {
+                bail!("injected interruption")
             }
-            let completed =
-                execute(home, "owner", pending, &mut registrar, &mut |_| Ok(())).unwrap();
-            assert_eq!(completed.phase, "committed");
-            assert_eq!(completed.id, id);
-            // Repeating an already-completed operation performs no network call.
-            execute(
-                home,
-                "owner",
-                completed,
-                &mut |_, _| panic!("completed operation must not register again"),
-                &mut |_| Ok(()),
-            )
-            .unwrap();
-            assert!(calls.iter().all(|mac| mac == &expected.mac_id));
-            if phase == "after_register" {
-                assert_eq!(
-                    calls.len(),
-                    2,
-                    "lost response retries the SAME signed identity"
-                );
-            }
-            alondra_core::home_lock::ensure_ready(home).unwrap();
-            let config: ServiceConfig =
-                toml::from_str(&fs::read_to_string(home.join(SERVICE_FILE)).unwrap()).unwrap();
-            assert_eq!(config.mac_id, expected.mac_id);
-            assert!(config.devices.is_empty());
-            assert!(config.journal_path.unwrap().contains(&id));
-            let devices: Vec<Value> =
-                serde_json::from_slice(&fs::read(home.join("devices.json")).unwrap()).unwrap();
-            assert_eq!(devices.len(), 1);
-            assert_eq!(devices[0]["id"], "lan-keep");
-            let (reopened, _) = load_or_create_keys(&identity_base(home).unwrap()).unwrap();
-            assert_eq!(reopened.mac_id, expected.mac_id);
-            assert!(!service_file(home, &reopened, "owner", false).unwrap());
-            assert_preserved(home);
+            Ok(())
+        });
+        assert!(result.is_err());
+        let pending = read_operation(home).unwrap().unwrap();
+        assert_eq!(pending.id, id);
+        if phase != "committed" {
+            assert!(alondra_core::home_lock::ensure_ready(home).is_err());
         }
+        let completed =
+            execute(home, "owner", pending, &mut registrar, &mut |_| Ok(())).unwrap();
+        assert_eq!(completed.phase, "committed");
+        assert_eq!(completed.id, id);
+        // Repeating an already-completed operation performs no network call.
+        execute(
+            home,
+            "owner",
+            completed,
+            &mut |_, _| panic!("completed operation must not register again"),
+            &mut |_| Ok(()),
+        )
+        .unwrap();
+        assert!(calls.iter().all(|mac| mac == &expected.mac_id));
+        if phase == "after_register" {
+            assert_eq!(
+                calls.len(),
+                2,
+                "lost response retries the SAME signed identity"
+            );
+        }
+        alondra_core::home_lock::ensure_ready(home).unwrap();
+        let config: ServiceConfig =
+            toml::from_str(&fs::read_to_string(home.join(SERVICE_FILE)).unwrap()).unwrap();
+        assert_eq!(config.mac_id, expected.mac_id);
+        assert!(config.devices.is_empty());
+        assert!(config.journal_path.unwrap().contains(&id));
+        let devices: Vec<Value> =
+            serde_json::from_slice(&fs::read(home.join("devices.json")).unwrap()).unwrap();
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0]["id"], "lan-keep");
+        let (reopened, _) = load_or_create_keys(&identity_base(home).unwrap()).unwrap();
+        assert_eq!(reopened.mac_id, expected.mac_id);
+        assert!(!service_file(home, &reopened, "owner", false).unwrap());
+        assert_preserved(home);
     }
+
+    macro_rules! interruption_resumes {
+        ($($test:ident: $phase:literal),* $(,)?) => {
+            $(
+                #[test]
+                fn $test() {
+                    interruption_resumes_same_generation_without_old_bindings($phase);
+                }
+            )*
+        };
+    }
+
+    interruption_resumes! {
+        an_interruption_once_prepared_resumes_the_same_generation: "prepared",
+        an_interruption_before_register_resumes_the_same_generation: "before_register",
+        an_interruption_after_register_resumes_the_same_generation: "after_register",
+        an_interruption_once_enrolled_resumes_the_same_generation: "enrolled",
+        an_interruption_once_approvals_are_removed_resumes_the_same_generation: "approvals_removed",
+        an_interruption_once_config_is_published_resumes_the_same_generation: "config_published",
+        an_interruption_once_committed_resumes_the_same_generation: "committed",
+    }
+
     #[test]
     fn interactive_resumes_after_new_config_was_published() {
         let fixture = fixture();

@@ -275,8 +275,15 @@ mod tests {
         files: PathBuf,
     }
 
+    /// Git reads neither the user's configuration nor the system's: a global `init.templatedir`
+    /// would install the user's commit hooks into every fixture, and each `git commit` would run them.
+    fn isolate(command: &mut Command) -> &mut Command {
+        command.env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_CONFIG_NOSYSTEM", "1")
+    }
+
     fn run(dir: &Path, args: &[&str]) {
-        let out = Command::new("git").arg("-C").arg(dir).args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]).args(args).output().unwrap();
+        let mut command = Command::new("git");
+        let out = isolate(&mut command).arg("-C").arg(dir).args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]).args(args).output().unwrap();
         assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
     }
 
@@ -300,6 +307,28 @@ mod tests {
         std::fs::create_dir_all(&files).unwrap();
         std::fs::write(root.join("new.png"), "new").unwrap();
         Repo { worktree: main.join(".claude/worktrees/x"), main, files, root }
+    }
+
+    #[test]
+    fn a_fixture_repository_runs_none_of_the_users_commit_hooks() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = crate::test_support::Directory::new();
+        let hooks = dir.join("template/hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        std::fs::write(hooks.join("pre-commit"), "#!/bin/sh\nexit 1\n").unwrap();
+        std::fs::set_permissions(hooks.join("pre-commit"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let user_config = dir.join("gitconfig");
+        std::fs::write(&user_config, format!("[init]\n\ttemplatedir = {}\n", dir.join("template").display())).unwrap();
+        let git = |args: &[&str]| {
+            let mut command = Command::new("git");
+            command.env("GIT_CONFIG_GLOBAL", &user_config).arg("-C").arg(&dir).args(["-c", "user.name=t", "-c", "user.email=t@t"]).args(args);
+            isolate(&mut command).output().unwrap()
+        };
+        assert!(git(&["init", "-q", "-b", "main", "repo"]).status.success());
+        std::fs::write(dir.join("repo/a.txt"), "a").unwrap();
+        assert!(git(&["-C", "repo", "add", "."]).status.success());
+        let commit = git(&["-C", "repo", "commit", "-q", "-m", "first"]);
+        assert!(commit.status.success(), "{}", String::from_utf8_lossy(&commit.stderr));
     }
 
     fn payload(cwd: &Path, command: &str) -> Value {

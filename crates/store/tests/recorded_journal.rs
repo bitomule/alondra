@@ -2,16 +2,16 @@ use alondra_domain::{ActivityView, Event, InputId, Refusal, RuntimeFact, TaskLif
 use alondra_foundation::{InteractionId, TaskId};
 use alondra_store::{AuthorityScope, LifecycleTransaction, read_journal};
 use rusqlite::{Connection, TransactionBehavior};
-#[path = "../../test_support.rs"]
-mod test_support;
 
 /// 2026-11-03, t-deps-done-still-waiting: the journal the daemon recorded while its SDK host lost its
 /// connection on every second input, with the doubt and resend events of each host that took its
 /// place. It was recorded before the rule for a doubtful input of a host Alondra ended changed, and
 /// loads as it did: the same doubts, the same settled resends.
-fn recorded(directory: &test_support::Directory, fixture: &str) -> Connection {
-    std::fs::create_dir_all(&**directory).unwrap();
-    let mut connection = Connection::open(directory.join("domain.db")).unwrap();
+///
+/// The journal lives in memory: on a file, each of the schema's statements commits on its own and
+/// waits for the disk, which a Mac writing many files at once makes a wait of seconds per test.
+fn recorded(fixture: &str) -> Connection {
+    let mut connection = Connection::open_in_memory().unwrap();
     connection.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
     connection.execute_batch(include_str!("../../domain-store-schema/schema.sql")).unwrap();
     let mut installing = connection.transaction_with_behavior(TransactionBehavior::Immediate).unwrap();
@@ -23,8 +23,7 @@ fn recorded(directory: &test_support::Directory, fixture: &str) -> Connection {
 
 #[test]
 fn the_journal_recorded_while_a_host_kept_losing_its_connection_loads_as_it_did() {
-    let directory = test_support::Directory::new();
-    let connection = recorded(&directory, include_str!("../fixtures/sdk-host-disconnect-loop.sql"));
+    let connection = recorded(include_str!("../fixtures/sdk-host-disconnect-loop.sql"));
     let scope = AuthorityScope::new("6d5130723af5fb06c149dc2641fbef8c47650cb6d8bb6e52ab65b71b04ce8f00".into()).unwrap();
     let journal = read_journal(&connection, &scope, |_, event, _| Ok::<_, alondra_store::Error>(format!("{event:?}"))).unwrap();
     let task = &journal[&TaskId::from("t-deps-done-still-waiting")];
@@ -45,8 +44,7 @@ fn the_journal_recorded_while_a_host_kept_losing_its_connection_loads_as_it_did(
 /// execution takes that input.
 #[test]
 fn the_journal_of_a_node_that_rested_through_a_disk_pause_ends_its_pause_by_telling_it_to_carry_on() {
-    let directory = test_support::Directory::new();
-    let connection = recorded(&directory, include_str!("../fixtures/disk-pause-resting-node.sql"));
+    let connection = recorded(include_str!("../fixtures/disk-pause-resting-node.sql"));
     let scope = AuthorityScope::new("6d5130723af5fb06c149dc2641fbef8c47650cb6d8bb6e52ab65b71b04ce8f00".into()).unwrap();
     let journal = read_journal(&connection, &scope, |_, event, _| Ok::<_, alondra_store::Error>(event.clone())).unwrap();
     let task = &journal[&TaskId::from("t-oss-9-export")];
@@ -71,8 +69,7 @@ fn the_journal_of_a_node_that_rested_through_a_disk_pause_ends_its_pause_by_tell
 /// node was told waits, and the pause ends with the same execution taking it.
 #[test]
 fn the_journal_of_a_node_that_took_turns_of_its_own_while_paused_loads_and_its_pause_ends() {
-    let directory = test_support::Directory::new();
-    let connection = recorded(&directory, include_str!("../fixtures/user-pause-own-turns.sql"));
+    let connection = recorded(include_str!("../fixtures/user-pause-own-turns.sql"));
     let scope = AuthorityScope::new("6d5130723af5fb06c149dc2641fbef8c47650cb6d8bb6e52ab65b71b04ce8f00".into()).unwrap();
     let journal = read_journal(&connection, &scope, |_, event, _| Ok::<_, alondra_store::Error>(event.clone())).unwrap();
     let task = &journal[&TaskId::from("t-flaky-daemon-engine-under-load")];
@@ -96,8 +93,7 @@ fn the_journal_of_a_node_that_took_turns_of_its_own_while_paused_loads_and_its_p
 /// had already taken. The turn and its end are taken as Claude reports them.
 #[test]
 fn the_turn_claude_starts_with_an_input_waiting_in_the_inbox_is_taken() {
-    let directory = test_support::Directory::new();
-    let connection = recorded(&directory, include_str!("../fixtures/turn-of-a-held-input.sql"));
+    let connection = recorded(include_str!("../fixtures/turn-of-a-held-input.sql"));
     let scope = AuthorityScope::new("6d5130723af5fb06c149dc2641fbef8c47650cb6d8bb6e52ab65b71b04ce8f00".into()).unwrap();
     let journal = read_journal(&connection, &scope, |_, event, _| Ok::<_, alondra_store::Error>(event.clone())).unwrap();
     let task = &journal[&TaskId::from("t-stuck-start")];
@@ -154,8 +150,7 @@ fn the_recorded_journals_replay_unchanged() {
     };
     let mut changed = Vec::new();
     for (name, fixture, expected) in fixtures {
-        let directory = test_support::Directory::new();
-        let connection = recorded(&directory, fixture);
+            let connection = recorded(fixture);
         let journal = read_journal(&connection, &scope, |before, event, _| Ok::<_, alondra_store::Error>(format!("{} {event:?}", seen(before)))).unwrap();
         let mut replayed = 0xcbf2_9ce4_8422_2325;
         for (task, read) in &journal {

@@ -56,7 +56,7 @@ low_opt_rust_test(
     name = "recorded_journal_test",
     size = "small",
     crate_root = "tests/recorded_journal.rs",
-    srcs = ["tests/recorded_journal.rs", "//crates:test_support.rs"],
+    srcs = ["tests/recorded_journal.rs"],
     compile_data = ["fixtures/disk-pause-resting-node.sql", "fixtures/sdk-host-disconnect-loop.sql", "fixtures/turn-of-a-held-input.sql", "fixtures/user-pause-own-turns.sql", "//crates/domain-store-schema:schema.sql"],
     edition = "2024",
     env = {"HOME": "."},
