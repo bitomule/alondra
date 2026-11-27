@@ -6,6 +6,13 @@ fn script() -> PathBuf {
     runfiles.join(std::env::var_os("TEST_WORKSPACE").expect("Bazel workspace")).join(PUBLIC_DATA_GUARD)
 }
 
+/// The interpreter the test wrapper names: `python3` is an Xcode shim that asks xcodebuild where
+/// python3 is when its cache has no entry for the HOME, which takes most of a minute on a loaded
+/// Mac, and the wrapper gives every test a new cache. Outside the wrapper there is no such name.
+fn python() -> std::ffi::OsString {
+    std::env::var_os("ALONDRA_TEST_PYTHON").unwrap_or_else(|| "python3".into())
+}
+
 /// A package whose nodes carry what only one of the two checks knows: an address, which the
 /// report's check finds, and the id of an issue of a tracker, which the public data guard finds.
 fn package(node: &str) -> tempfile::TempDir {
@@ -20,7 +27,7 @@ fn convert_with_both_checks(package: &Path, target: &Path) -> Result<alondra_sce
     let staging = tempfile::tempdir().unwrap();
     let values = vec!["canaryhorizon".to_owned()];
     let report = |files: &[(&str, &str)], originals: &[String]| report_check(files, originals, &values);
-    let public = |files: &[(&str, &str)], _: &[String]| public_data_guard(files, &script(), staging.path());
+    let public = |files: &[(&str, &str)], _: &[String]| public_data_guard(files, &python(), &script(), staging.path());
     convert(package, "canary-case", target, &[], &[&report, &public])
 }
 
@@ -53,4 +60,13 @@ fn a_clean_package_passes_both_checks_and_is_written() {
     let target = out.path().join("draft");
     convert_with_both_checks(source.path(), &target).expect("a clean package drafts");
     assert!(target.join("scenario.toml").is_file());
+}
+
+#[test]
+fn the_guard_runs_without_asking_xcodebuild_where_python_is() {
+    let Some(cache) = std::env::var_os("xcrun_db").map(PathBuf::from).filter(|_| std::env::var_os("ALONDRA_TEST_PYTHON").is_some()) else { return };
+    let source = package("node-1");
+    let out = tempfile::tempdir().unwrap();
+    convert_with_both_checks(source.path(), &out.path().join("draft")).expect("a clean package drafts");
+    assert!(!cache.exists(), "the guard went through the python3 shim, which asked xcodebuild and cached the answer in {}", cache.display());
 }

@@ -279,6 +279,15 @@ class BazelTestTmpdirTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, "xcrun wrote its cache outside the test's TMPDIR")
         self.assertEqual(list(self.root.iterdir()), [])
 
+    @unittest.skipUnless(Path("/usr/bin/xcrun").exists(), "xcrun is macOS only")
+    def test_the_wrapper_starts_without_asking_xcodebuild_where_python_is(self):
+        # The shim at /usr/bin/python3 runs xcodebuild when xcrun_db has no entry for the HOME, and
+        # the cache is a new file for every test: the file's existence is what tells it ran.
+        env = {key: value for key, value in self.environment().items() if key not in ("xcrun_db", "ALONDRA_TEST_PYTHON")}
+        script = 'test ! -e "$xcrun_db" && test -x "$ALONDRA_TEST_PYTHON" && "$ALONDRA_TEST_PYTHON" -c pass && test ! -e "$xcrun_db"'
+        result = subprocess.run([str(wrapper), "/bin/sh", "-c", script], env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, "the wrapper or the python it names asked xcodebuild: " + result.stderr)
+
     def test_a_failing_test_leaves_nothing_and_keeps_its_exit_code(self):
         self.assertEqual(self.run_wrapped(READ_ONLY_TREE + " && exit 3"), 3)
         self.assertEqual(list(self.root.iterdir()), [])
