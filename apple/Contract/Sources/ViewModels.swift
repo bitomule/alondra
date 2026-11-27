@@ -244,6 +244,7 @@ public struct More: Codable, Equatable, Sendable { public let key: String; publi
 /// `Item` is internally tagged by the wire's `type` property.
 public enum ViewItem: Codable, Equatable, Sendable {
     case card(Card), row(Row), markdown(Markdown), contentRef(ContentRef), facts(Facts), checks(Checks), timeline(Timeline), form(Form), notice(Notice), actions(ActionBar)
+    case specSheet(SpecSheet), decisionSheet(DecisionSheet)
     /// A kind of item a newer daemon sent: the app asks to be updated to see it.
     case unsupported
     private enum TagKeys: String, CodingKey { case type }
@@ -261,6 +262,8 @@ public enum ViewItem: Codable, Equatable, Sendable {
         case "form": self = .form(try Form(from: decoder))
         case "notice": self = .notice(try Notice(from: decoder))
         case "actions": self = .actions(try ActionBar(from: decoder))
+        case "spec_sheet": self = .specSheet(try SpecSheet(from: decoder))
+        case "decision_sheet": self = .decisionSheet(try DecisionSheet(from: decoder))
         default: self = .unsupported
         }
     }
@@ -277,6 +280,8 @@ public enum ViewItem: Codable, Equatable, Sendable {
         case let .form(value): try tag.encode("form", forKey: .type); try value.encode(to: encoder)
         case let .notice(value): try tag.encode("notice", forKey: .type); try value.encode(to: encoder)
         case let .actions(value): try tag.encode("actions", forKey: .type); try value.encode(to: encoder)
+        case let .specSheet(value): try tag.encode("spec_sheet", forKey: .type); try value.encode(to: encoder)
+        case let .decisionSheet(value): try tag.encode("decision_sheet", forKey: .type); try value.encode(to: encoder)
         case .unsupported: try tag.encode("unsupported", forKey: .type)
         }
     }
@@ -632,6 +637,10 @@ public enum Input: Codable, Equatable, Sendable {
 
 public enum FieldKind: Codable, Equatable, Sendable {
     case text(placeholder: String?), multiline(placeholder: String?), attachments, toggle, choice(items: [ChoiceItem]), picker(source: String), date, time, stepper(min: Int64, max: Int64), lines(placeholder: String?)
+    /// The steps of a scenario as Gherkin writes them, one per line: edited as rows of lane, text and table.
+    case steps(placeholder: String?)
+    /// A diagram's Mermaid text, shown drawn as it is typed.
+    case mermaid(placeholder: String?)
     private enum Keys: String, CodingKey { case kind, placeholder, items, source, min, max }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
@@ -646,6 +655,8 @@ public enum FieldKind: Codable, Equatable, Sendable {
         case "time": self = .time
         case "stepper": self = .stepper(min: try c.decode(Int64.self, forKey: .min), max: try c.decode(Int64.self, forKey: .max))
         case "lines": self = .lines(placeholder: try c.decodeIfPresent(String.self, forKey: .placeholder))
+        case "steps": self = .steps(placeholder: try c.decodeIfPresent(String.self, forKey: .placeholder))
+        case "mermaid": self = .mermaid(placeholder: try c.decodeIfPresent(String.self, forKey: .placeholder))
         case let kind: throw ContractCodec.UnknownValue(kind: kind)
         }
     }
@@ -662,6 +673,8 @@ public enum FieldKind: Codable, Equatable, Sendable {
         case .time: try c.encode("time", forKey: .kind)
         case let .stepper(a, b): try c.encode("stepper", forKey: .kind); try c.encode(a, forKey: .min); try c.encode(b, forKey: .max)
         case let .lines(v): try c.encode("lines", forKey: .kind); try c.encodeIfPresent(v, forKey: .placeholder)
+        case let .steps(v): try c.encode("steps", forKey: .kind); try c.encodeIfPresent(v, forKey: .placeholder)
+        case let .mermaid(v): try c.encode("mermaid", forKey: .kind); try c.encodeIfPresent(v, forKey: .placeholder)
         }
     }
 }

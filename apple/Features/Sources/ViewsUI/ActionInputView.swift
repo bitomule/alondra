@@ -140,6 +140,10 @@ public struct ActionInputView: View {
                 VStack(alignment: .leading, spacing: 5) {
                     Text(field.label).font(.subheadline.weight(.semibold))
                     fieldControl(field)
+                    if let rejected = store.fieldError, rejected.field == field.id {
+                        Label(rejected.message, systemImage: "exclamationmark.circle.fill").font(.caption.weight(.semibold)).foregroundStyle(ViewPalette.rose)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     if let help = field.help { Text(help).font(.caption).foregroundStyle(.secondary) }
                 }
             }
@@ -184,6 +188,10 @@ public struct ActionInputView: View {
                 TextField(placeholder ?? "", text: stringBinding(field, value: value))
                     .padding(10).background(Color.primary.opacity(0.06), in: .rect(cornerRadius: 10))
             }
+        case let .steps(placeholder):
+            StepsEditorView(text: stringBinding(field, value: value), placeholder: placeholder ?? "")
+        case let .mermaid(placeholder):
+            MermaidEditorView(code: stringBinding(field, value: value), placeholder: placeholder ?? "")
         case .attachments:
             EmptyView()
         case .toggle:

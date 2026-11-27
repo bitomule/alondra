@@ -424,6 +424,20 @@ drawn, and a mockup or capture is a framed line that «o» opens in the Mac's im
 |---|---|
 | ![Editing a diagram](../images/spec-sheets/editor-diagram-en-dark.png) | ![A change drawn as marked sheets](../images/spec-sheets/amendment-en-dark.png) |
 
+On the iPhone and the Mac the same sheets are native views, built once in the design library
+and shared by both. A scenario is a card that folds, its lanes sit under their names and, on a
+window wide enough, beside its mockup; a mockup is a thumbnail of its real proportion that opens
+full screen and zooms, a diagram is drawn with its summary read by VoiceOver, and a capture of the
+evidence is drawn under the verdict it belongs to, which is always marked as a judgment. A scenario
+says its kind and what changed, and in a delivery its state; every part has its alternative text.
+Tapping a scenario, a spec, a decision or a diagram in the editor opens its form over the list. The
+steps are edited as rows (lane, words, table, with add, remove and reorder buttons), a diagram's
+Mermaid text is drawn as it is typed and a mockup is attached from a photo or a file. The edit
+shows at once on its sheet marked «saving» and goes on retrying without a notice; after 30 seconds
+without the Mac's confirmation the sheet says so, and an edit the Mac refuses goes back to what it
+was and its form opens again with the reason beside the field. The apps ask for the capability
+`spec_fields`; without it the daemon sends steps and Mermaid as multiline text.
+
 ### Written while no agent works
 
 Alondra writes the approved files, mockups byte for byte, into the task's worktree itself, and only while no agent of the

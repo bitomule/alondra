@@ -305,6 +305,10 @@ public struct MacServiceDetail: View {
                             }
                         }.frame(maxWidth: 900, alignment: .leading).padding(24)
                     }
+                    .environment(\.specEdits, presentation.specEdits)
+                    .environment(\.sheetHandlers, SheetHandlers(
+                        onComment: canComment(document) ? { presentation.send(.sheetCommentRequested($0)) } : nil,
+                        commented: Set(presentation.sheetComments.keys)))
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .overlay(alignment: .top) {
@@ -324,10 +328,14 @@ public struct MacServiceDetail: View {
                         }
                     }.accessibilityHidden(true)
                 }
+                .sheet(item: Binding(get: { presentation.composingSheetComment.map { SheetCommentID(anchor: $0.anchor) } },
+                                     set: { if $0 == nil { presentation.send(.sheetCommentCancelled) } })) { composing in
+                    MacSheetCommentSheet(presentation: presentation, anchor: composing.anchor)
+                }
                 .sheet(isPresented: Binding(get: { presentation.actionPresented }, set: { presentation.send(.actionPresented($0)) })) {
                     MacViewActionSheet(presentation: presentation, form: presentation.activeForm,
                                        onDismiss: { presentation.send(.actionPresented(false)) })
-                        .frame(minWidth: 420, minHeight: 240)
+                        .frame(minWidth: editsSpecs ? 600 : 420, minHeight: editsSpecs ? 420 : 240)
                 }
                 .sheet(isPresented: Binding(get: { presentation.contentPresented }, set: { presentation.send(.contentPresented($0)) })) {
                     MacContentViewer(title: presentation.contentTitle, content: presentation.contentShown,
@@ -340,18 +348,33 @@ public struct MacServiceDetail: View {
             } else if presentation.selectedViewKey != nil,
                       case .lost(let problem) = ConnectionIndicators(connection, hasSavedData: false).cover {
                 ConnectionUnavailable(problem: problem) { recovery?.retry() }
+            } else if let error = presentation.viewError, connection.isConnected, showsSpecs {
+                SheetFailureView(message: error) { presentation.send(.reconnected) }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let error = presentation.viewError, connection.isConnected {
                 ContentUnavailableView("Couldn’t load this view", systemImage: "exclamationmark.triangle", description: Text(error))
             } else if presentation.selectedViewKey == nil {
                 ContentUnavailableView("Nothing selected", systemImage: "sidebar.left",
                                        description: Text("Choose something in the sidebar."))
+            } else if showsSpecs {
+                ScrollView { SheetLoadingView().frame(maxWidth: 900).padding(24) }
             } else { ProgressView("Loading…") }
         }
     }
 
+    private func canComment(_ document: ViewDocument) -> Bool {
+        !document.sheetAnchors.isEmpty && document.sections.flatMap(\.items).contains { item in
+            if case let .card(card) = item { (card.actions + card.more).contains { $0.comments?.kind == .blocks } } else { false }
+        }
+    }
+
+    private var showsSpecs: Bool { presentation.selectedViewKey?.hasPrefix("task_specs:") == true }
+
     private func showsCard(_ document: ViewDocument) -> Bool {
         document.sections.contains { $0.items.contains { if case let .card(card) = $0 { card.need != nil } else { false } } }
     }
+
+    private var editsSpecs: Bool { presentation.activeForm?.submit.id?.hasPrefix("spec_edit:") == true }
 
     private func showContent(of document: ViewDocument, scrollTo proxy: ScrollViewProxy) {
         if document.sections.contains(where: { $0.id == "content" }) {
@@ -366,7 +389,12 @@ public struct MacServiceDetail: View {
 
     private func openLink(_ link: AlondraContract.Link) {
         switch link {
-        case let .view(key): presentation.send(.select(.viewKey(key)))
+        case let .view(key):
+            if presentation.selectedViewKey?.hasPrefix("task_specs:") == true, SpecEdits.isEditorForm(key) {
+                presentation.send(.editSpec(key))
+            } else {
+                presentation.send(.select(.viewKey(key)))
+            }
         case let .url(raw):
             guard let url = URL(string: raw), url.scheme?.lowercased() == "https",
                   let host = url.host?.lowercased(), host == "github.com" || host.hasSuffix(".github.com") else { return }
@@ -904,5 +932,35 @@ public struct MacGaugeParts: View {
     }
     static func color(_ level: Level) -> Color {
         switch level { case .calm: .accentColor; case .warm: .orange; case .hot: .red }
+    }
+}
+
+struct SheetCommentID: Identifiable {
+    let anchor: SheetAnchor
+    var id: String { anchor.id }
+}
+
+/// A comment on a part of a sheet: what it quotes and the person's words, kept until an action that takes comments sends it.
+struct MacSheetCommentSheet: View {
+    let presentation: StoreOf<MacPresentationFeature>
+    let anchor: SheetAnchor
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Comment").font(.title3.weight(.semibold))
+            Text(anchor.quote).font(.callout.monospaced()).foregroundStyle(.secondary)
+            TextEditor(text: Binding(get: { presentation.composingSheetComment?.text ?? "" }, set: { presentation.send(.sheetCommentChanged($0)) }))
+                .font(.body).frame(minHeight: 120).padding(6)
+                .background(.quaternary.opacity(0.35), in: .rect(cornerRadius: 8))
+            HStack {
+                if presentation.sheetComments[anchor.id] != nil {
+                    Button("Delete", role: .destructive) { presentation.send(.sheetCommentDeleted) }
+                }
+                Spacer()
+                Button("Cancel") { presentation.send(.sheetCommentCancelled) }.keyboardShortcut(.cancelAction)
+                Button("Save") { presentation.send(.sheetCommentSaved) }.keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(20).frame(minWidth: 460)
     }
 }

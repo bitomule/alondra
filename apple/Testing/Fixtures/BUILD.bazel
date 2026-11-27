@@ -7,7 +7,7 @@ filegroup(
 )
 
 exports_files(
-    ["RequestedFormCard.swift", "SpanishTestData.swift"],
+    ["RequestedFormCard.swift", "SpanishTestData.swift", "SpecSheetFixtures.swift"],
     visibility = ["//apple:__subpackages__"],
 )
 

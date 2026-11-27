@@ -53,6 +53,11 @@ public struct MacPresentationFeature: Sendable {
         public var actionPresented = false
         public var actionTarget: String?
         public var optimistic = Optimistic()
+        /// What the person wrote on parts of the sheets of the card they read, by the part it is anchored to.
+        public var sheetComments: [String: ActionComment] = [:]
+        public var composingSheetComment: SheetComposing?
+        /// What the person edited in the specs of a plan that the Mac has not confirmed yet.
+        @Shared(.inMemory("specEdits")) public var specEdits = SpecEdits()
         /// Requests that went out without an answer, by action: pressing the same again resends them.
         public var unsure: [String: ActionRequest] = [:]
         /// Why the daemon did not take a card's answer, by card, shown when the card is listed again.
@@ -97,6 +102,12 @@ public struct MacPresentationFeature: Sendable {
             return terms.allSatisfy { haystack.contains($0) }
         }
     }
+    /// A comment on a part of a sheet while it is written.
+    public struct SheetComposing: Equatable, Sendable {
+        public let anchor: SheetAnchor
+        public var text: String
+    }
+
     public enum Action {
         case select(Selection?)
         case queryChanged(String)
@@ -133,6 +144,14 @@ public struct MacPresentationFeature: Sendable {
         case contentPresented(Bool)
         case actionPresented(Bool)
         case action(ActionFeature.Action)
+        /// The person chose a part of a plan's specs to edit: its form opens over the list of them.
+        case editSpec(String)
+        case specEditOverdue(String)
+        case sheetCommentRequested(SheetAnchor)
+        case sheetCommentChanged(String)
+        case sheetCommentSaved
+        case sheetCommentDeleted
+        case sheetCommentCancelled
         case undeliveredChanged(Set<String>)
         /// The daemon has not confirmed the answer to this card in time: it waits again.
         case answerOverdue(String)
@@ -149,7 +168,7 @@ public struct MacPresentationFeature: Sendable {
     @Dependency(\.continuousClock) var clock
     @Dependency(\.mcpSignIn) var mcpSignIn
     @Dependency(\.viewsClient) var viewsClient
-    private enum CancelID: Hashable { case search, picker, undelivered, confirmation(String) }
+    private enum CancelID: Hashable { case search, picker, undelivered, confirmation(String), specEdit(String) }
     public var body: some ReducerOf<Self> {
         Reduce { state, action in
             switch action {
@@ -163,6 +182,9 @@ public struct MacPresentationFeature: Sendable {
                 state.actionPresented = !action.sendsWithoutAsking
                 if action.sendsWithoutAsking {
                     return .concatenate(.send(.action(.present(action))), .send(.action(.submit)))
+                }
+                if action.comments != nil, !state.sheetComments.isEmpty {
+                    return .concatenate(.send(.action(.present(action))), .send(.action(.commentsChanged(Array(state.sheetComments.values)))))
                 }
                 return .send(.action(.present(action)))
             case let .sendReply(action, text):
@@ -275,6 +297,53 @@ public struct MacPresentationFeature: Sendable {
                     state.activeForm = nil
                     state.actionTarget = nil
                 }
+            case .sheetCommentRequested(let anchor):
+                state.composingSheetComment = SheetComposing(anchor: anchor, text: state.sheetComments[anchor.id]?.text ?? "")
+                return .none
+            case .sheetCommentChanged(let text):
+                state.composingSheetComment?.text = text
+                return .none
+            case .sheetCommentSaved:
+                guard let composing = state.composingSheetComment else { return .none }
+                state.composingSheetComment = nil
+                let text = composing.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                state.sheetComments[composing.anchor.id] = text.isEmpty ? nil : ActionComment(anchor: composing.anchor.id, text: text, quote: composing.anchor.quote)
+                return .none
+            case .sheetCommentDeleted:
+                if let composing = state.composingSheetComment { state.sheetComments[composing.anchor.id] = nil }
+                state.composingSheetComment = nil
+                return .none
+            case .sheetCommentCancelled:
+                state.composingSheetComment = nil
+                return .none
+            case .editSpec(let key):
+                return .run { [viewsClient] send in
+                    guard case let .document(document) = try? await viewsClient.load(ViewKey(rawValue: key), nil),
+                          let form = document.sections.lazy.flatMap(\.items).compactMap({ item -> AlondraContract.Form? in
+                              if case let .form(form) = item { form } else { nil }
+                          }).first else { return await send(.viewFailed(key, String(localized: "Couldn’t load this from your Mac. Try again."))) }
+                    await send(.beginViewForm(form))
+                }
+            case .action(.sending(let request)) where SpecEdits.handles(request):
+                let form = state.activeForm
+                state.$specEdits.withLock { $0.begin(request, form: form) }
+                return Optimistic.confirmation(of: request.deliveryCorrelationID, clock: clock,
+                                               cancelID: CancelID.specEdit(request.deliveryCorrelationID), overdue: Action.specEditOverdue)
+            case .action(.sent(let request)) where SpecEdits.handles(request):
+                state.actionPresented = false
+                state.activeForm = nil
+                return .none
+            case .action(.settled(let request, let applied)) where SpecEdits.handles(request):
+                state.$specEdits.withLock { $0.settle(request, applied: applied, shown: state.detailDocument?.version) }
+                return .cancel(id: CancelID.specEdit(request.deliveryCorrelationID))
+            case .action(.answered(let request, let reply)) where SpecEdits.handles(request) && reply.outcome != .applied:
+                return reopen(request, field: reply.field, message: OutcomeStyle(reply).message, state: &state)
+            case .action(.undelivered(let request, let failure)) where SpecEdits.handles(request):
+                state.$specEdits.withLock { $0.settle(request, applied: false, shown: nil) }
+                return reopen(request, field: nil, message: failure.message, state: &state)
+            case .specEditOverdue(let id):
+                state.$specEdits.withLock { $0.expire(id) }
+                return .none
             case .action(.sending(let request)):
                 guard request.dataEpoch == state.actionFeature.dataEpoch, request.resolvesItsCard,
                       let target = state.actionTarget else { return .none }
@@ -342,6 +411,7 @@ public struct MacPresentationFeature: Sendable {
                     state.detailDocument = nil
                     return openVisibleViews(&state)
                 }
+                if state.selectedViewKey != key { state.sheetComments = [:] }
                 state.selection = .viewKey(key)
                 state.selectedViewKey = key
                 state.arrivals.removeAll { $0 == key }
@@ -436,6 +506,7 @@ public struct MacPresentationFeature: Sendable {
                             state.openSections.contains($0.id) && state.sectionPages[$0.id] != nil
                         }
                         state.detailDocument = document
+                        state.$specEdits.withLock { $0.reconcile(document.version) }
                         if state.activeForm != nil,
                            let updated = document.sections.lazy.flatMap(\.items).compactMap({ item -> AlondraContract.Form? in
                                if case let .form(form) = item { form } else { nil }
@@ -547,6 +618,16 @@ public struct MacPresentationFeature: Sendable {
 
     /// The daemon asks about an answer again: its card is shown, unless the person is already
     /// answering another one.
+    /// A refused edit goes back to what it was and its form opens again with what the person wrote.
+    private func reopen(_ request: ActionRequest, field: String?, message: String, state: inout State) -> Effect<Action> {
+        guard let edit = state.$specEdits.withLock({ $0.refused(request) }), let form = edit.form else { return .none }
+        return .concatenate(
+            .send(.beginViewForm(form)),
+            .send(.action(.fieldsChanged(edit.fields))),
+            .send(.action(.fieldRejected(field: field ?? "", message: message)))
+        )
+    }
+
     private func bringBack(_ id: String, _ state: inout State) -> Effect<Action> {
         guard !state.actionPresented || state.actionTarget == id,
               let key = Self.waitingEntries(in: state.sidebarDocument).first(where: { $0.id == id })?.key,
