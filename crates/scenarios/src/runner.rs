@@ -16,7 +16,7 @@ use alondra_domain_model::{
 };
 use alondra_views::action_id::ActionId;
 use alondra_daemon_engine::github_world::GithubWorld;
-use alondra_daemon_engine::machine::MachineProbe;
+use alondra_engine_ports::machine::MachineProbe;
 use alondrad::assemble::{self, Assembled, Backend, GithubSeams, Pushes, Seams};
 use alondrad::push_transport::{RecordedPushes, SentPush};
 use serde_json::{Value, json};

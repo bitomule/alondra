@@ -1,4 +1,4 @@
-use alondra_daemon_engine::machine::MachineProbe;
+use alondra_engine_ports::machine::MachineProbe;
 use alondra_scenarios::runner::CalmMac;
 use std::future::Future;
 use std::task::{Context, Poll, Waker};

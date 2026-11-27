@@ -196,11 +196,11 @@ async fn a_stale_startup_account_check_retries_and_releases_account_selection() 
     std::fs::write(options, config.to_toml()).unwrap();
     begin_initial_check(&*domain);
     let attempts = std::cell::Cell::new(0);
-    crate::native_probe::retry_with(|| {
+    alondra_engine_ports::native_probe::retry_with(|| {
         attempts.set(attempts.get() + 1);
         let outcome = check_current(&*domain, &f.home);
         if attempts.get() == 1 {
-            assert_eq!(outcome, crate::native_probe::Outcome::Stale);
+            assert_eq!(outcome, alondra_engine_ports::native_probe::Outcome::Stale);
             assert!(require_initial_check(&*domain).is_err());
             assert!(domain.read().state().accounts.is_empty());
         }

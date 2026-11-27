@@ -15,15 +15,16 @@ use alondra_daemon_support::{locks, node_cost, runtime_mutex, save};
 pub mod process_watch;
 
 pub mod disk_peaks;
-use alondra_daemon_engine_machine::{machine_state, swap_disk};
 #[cfg(test)]
 use alondra_engine_kernel::{domain_runtime, domain_runtime::DomainRuntime, domain_store};
 
 pub mod admission;
 mod engine;
 pub mod machine_hooks;
+pub mod machine_state;
 pub mod machine_watch;
 pub mod pauses;
+pub mod swap_disk;
 
 use admission::{Admission, Hold, Key, Waiting};
 use alondra_core::Millis;

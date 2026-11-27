@@ -526,11 +526,11 @@ for raw in sys.stdin:
     let mut config = AccountsConfig::fresh(); config.connect(Provider::Claude);
     std::fs::write(alondra_core::options::path_in(&f.home), config.to_toml()).unwrap();
     let attempts = std::cell::Cell::new(0);
-    crate::native_probe::retry_with(|| {
+    alondra_engine_ports::native_probe::retry_with(|| {
         attempts.set(attempts.get() + 1);
         let outcome = check_current(&*domain, &f.home);
         if attempts.get() == 1 {
-            assert_eq!(outcome, crate::native_probe::Outcome::Stale);
+            assert_eq!(outcome, alondra_engine_ports::native_probe::Outcome::Stale);
             assert!(domain.read().state().model_catalogs.is_empty());
         }
         std::future::ready(outcome)
@@ -607,15 +607,15 @@ fn antigravity_accounts_are_checked_with_their_models_and_usage_only_when_due_an
     let status = |state: &alondra_domain_model::DomainState, key: &AccountKey| state.accounts.iter().find(|status| status.provider == key.provider && status.id == key.account).cloned().unwrap();
     let studio_probes = |probes: &[alondra_core::antigravity_account::Probe]| probes.iter().filter(|probe| probe.launch.environment.get("GEMINI_HOME").map(PathBuf::from) == Some(folder.clone())).count();
     begin_initial_check(&*domain);
-    assert_eq!(check_current(&*domain, &f.home), crate::native_probe::Outcome::Finished);
+    assert_eq!(check_current(&*domain, &f.home), alondra_engine_ports::native_probe::Outcome::Finished);
     assert!(doubles.antigravity_probes().is_empty(), "the check after startup, which every launch waits for, runs no agy");
     assert!(require_initial_check(&*domain).is_ok(), "and lets launches go once Claude and Codex are known");
     assert_eq!(status(&domain.read().state().clone(), &studio).state, AccountState::Unchecked);
-    assert_eq!(check_current(&*domain, &f.home), crate::native_probe::Outcome::Finished);
+    assert_eq!(check_current(&*domain, &f.home), alondra_engine_ports::native_probe::Outcome::Finished);
     assert_eq!(status(&domain.read().state().clone(), &studio).state, AccountState::SignedOut, "an API key account with no key is signed out");
     assert_eq!(studio_probes(&doubles.antigravity_probes()), 0, "and no agy starts to learn it");
     doubles.set_antigravity_key(&f.home, &studio, Some(&alondra_core::antigravity_account::Secret::new("AIza-fixture".into()))).unwrap();
-    assert_eq!(check_current(&*domain, &f.home), crate::native_probe::Outcome::Finished);
+    assert_eq!(check_current(&*domain, &f.home), alondra_engine_ports::native_probe::Outcome::Finished);
     let state = domain.read().state().clone();
     let native = AccountKey::native(Provider::Antigravity);
     assert_eq!(status(&state, &native).state, AccountState::SignedIn);
@@ -629,7 +629,7 @@ fn antigravity_accounts_are_checked_with_their_models_and_usage_only_when_due_an
     assert_eq!(studio_probes(&doubles.antigravity_probes()), 1, "a new key checks the account again, which is never read for usage");
 
     let started = doubles.antigravity_probes().len();
-    assert_eq!(check_current(&*domain, &f.home), crate::native_probe::Outcome::Finished);
+    assert_eq!(check_current(&*domain, &f.home), alondra_engine_ports::native_probe::Outcome::Finished);
     assert_eq!(doubles.antigravity_probes().len(), started, "an account checked today starts no agy again");
 
     crate::antigravity_accounts::forget(&f.home, &native);

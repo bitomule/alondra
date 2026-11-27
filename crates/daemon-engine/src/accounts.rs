@@ -521,13 +521,13 @@ pub fn check_now(domain: &dyn Runtime, home: &Path) {
 
 /// Checks every account's sign-in and records what it saw.
 pub fn check(domain: &dyn Runtime, home: &Path) {
-    if check_current(domain, home) == crate::native_probe::Outcome::Stale {
+    if check_current(domain, home) == alondra_engine_ports::native_probe::Outcome::Stale {
         domain.live().account_check.notify_one();
     }
 }
 
-pub fn check_current(domain: &dyn Runtime, home: &Path) -> crate::native_probe::Outcome {
-    if let Err(why) = migrate_legacy_settings(domain, home) { log!("Provider settings migration needs repair: {why}"); return crate::native_probe::Outcome::Finished; }
+pub fn check_current(domain: &dyn Runtime, home: &Path) -> alondra_engine_ports::native_probe::Outcome {
+    if let Err(why) = migrate_legacy_settings(domain, home) { log!("Provider settings migration needs repair: {why}"); return alondra_engine_ports::native_probe::Outcome::Finished; }
     match probe_fence(domain, home) {
         Ok((fence, file)) => {
             let known = fence.state.accounts.clone();
@@ -593,7 +593,7 @@ pub fn check_current(domain: &dyn Runtime, home: &Path) -> crate::native_probe::
             commands.extend(antigravity_found);
             if let Err(why) = publish_current_probe(domain, home, fence, commands) {
                 log!("Discarded native account metadata: {why}");
-                return crate::native_probe::Outcome::of(&why);
+                return alondra_engine_ports::native_probe::Outcome::of(&why);
             }
             crate::antigravity_accounts::remember(home, antigravity_checked);
             correct_crossed_sessions(domain, &known);
@@ -610,15 +610,15 @@ pub fn check_current(domain: &dyn Runtime, home: &Path) -> crate::native_probe::
             for key in refresh {
                 if let Err(why) = refresh_models_current(domain, home, &key) {
                     log!("The connected Claude account's models are not ready: {why}");
-                    if crate::native_probe::Outcome::of(&why) == crate::native_probe::Outcome::Stale {
-                        return crate::native_probe::Outcome::Stale;
+                    if alondra_engine_ports::native_probe::Outcome::of(&why) == alondra_engine_ports::native_probe::Outcome::Stale {
+                        return alondra_engine_ports::native_probe::Outcome::Stale;
                     }
                 }
             }
         }
         Err(why) => log!("accounts not checked: {why}"),
     }
-    crate::native_probe::Outcome::Finished
+    alondra_engine_ports::native_probe::Outcome::Finished
 }
 
 /// Claude accounts `before` showed with another's email and `now` show with their own: their
@@ -883,12 +883,12 @@ pub(crate) fn recover_settings(domain: &dyn Runtime, home: &Path) -> Result<(), 
 /// answered or refused a sign-in while no account had a session.
 pub async fn run(domain: Arc<dyn Runtime>, home: PathBuf) {
     loop {
-        crate::native_probe::retry(|| {
+        alondra_engine_ports::native_probe::retry(|| {
             let (checking, at) = (domain.clone(), home.clone());
             async move {
                 alondra_core::clock::spawn_blocking(move || check_current(&*checking, &at)).await.unwrap_or_else(|_| {
                     log!("the accounts check stopped");
-                    crate::native_probe::Outcome::Finished
+                    alondra_engine_ports::native_probe::Outcome::Finished
                 })
             }
         }).await;

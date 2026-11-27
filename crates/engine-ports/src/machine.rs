@@ -1,11 +1,9 @@
-//! The Mac the daemon runs on, read through [`MachineProbe`], and why it has no room for one more
-//! node, as the admission gate reports it.
-use alondra_core::{Machine, MemoryPressure};
+//! The Mac the daemon runs on, read through [`MachineProbe`] and sampled into [`Gauges`], and why it
+//! has no room for one more node, as the admission gate reports it.
+use alondra_core::{clock, Machine, MemoryPressure};
+use alondra_foundation::locks::Poisonable as _;
 use std::sync::Arc;
-
-/// The latest gauges of the resource API daemon, read by `/daemon` for the TUI header. A sample is
-/// only ever replaced whole, so a lock whose holder panicked still holds a whole one.
-pub type Gauges = Arc<std::sync::Mutex<Option<(Machine, Option<alondra_core::usage::Usage>, Vec<alondra_core::usage::ProviderUsage>)>>>;
+use std::time::Duration;
 
 /// Where the gauges of the Mac come from: its memory, load and own disk in production, a fixed or
 /// scripted Mac in a test or a scenario. It only measures; what to do with a sample is decided above.
@@ -45,3 +43,36 @@ impl std::fmt::Display for NoRoom {
         }
     }
 }
+
+/// The latest gauges of the resource API daemon, read by `/daemon` for the TUI header. A sample is
+/// only ever replaced whole, so a lock whose holder panicked still holds a whole one.
+pub type Gauges = Arc<std::sync::Mutex<Option<(Machine, Option<alondra_core::usage::Usage>, Vec<alondra_core::usage::ProviderUsage>)>>>;
+
+/// The plan's limits travel with the machine's gauges, read from what each account measured.
+pub async fn run(
+    gauges: Gauges,
+    probe: Arc<dyn MachineProbe>,
+    usage_at: impl Fn(alondra_core::Millis) -> (Option<alondra_core::usage::Usage>, Vec<alondra_core::usage::ProviderUsage>),
+    published: Option<Arc<dyn Fn() + Send + Sync>>,
+) {
+    sample_loop(probe, |machine| {
+        let (usage, providers) = usage_at(machine.at);
+        *gauges.lock_or_recover("the machine gauges") = Some((machine, usage, providers));
+        if let Some(published) = &published {
+            published();
+        }
+    }).await
+}
+
+async fn sample_loop(probe: Arc<dyn MachineProbe>, mut publish: impl FnMut(Machine)) {
+    loop {
+        let sampling = probe.clone();
+        let machine = clock::spawn_blocking(move || sampling.sample()).await.expect("machine sample worker failed");
+        publish(machine);
+        clock::sleep(Duration::from_secs(10)).await;
+    }
+}
+
+#[cfg(test)]
+#[path = "machine_tests.rs"]
+mod tests;

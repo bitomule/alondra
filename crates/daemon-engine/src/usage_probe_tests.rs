@@ -78,7 +78,7 @@ fn a_new_sign_in_is_measured_at_once() {
 
 #[test]
 fn stale_usage_retries_keep_their_deadline_without_blocking_other_accounts() {
-    use crate::native_probe::Outcome;
+    use alondra_engine_ports::native_probe::Outcome;
     let account = id("default");
     let other = id("work");
     let accounts = [account.clone(), other.clone()];
@@ -120,7 +120,7 @@ async fn a_usage_retry_rechecks_settings_before_launching_a_disabled_account() {
     let count = home.join("probe-count");
     backend.native_environment.insert("PROBE_COUNT".into(), count.display().to_string());
     domain.enable_sdk(backend);
-    assert_eq!(measure_account(&*domain, &home, &id("default")).await, crate::native_probe::Outcome::Finished);
+    assert_eq!(measure_account(&*domain, &home, &id("default")).await, alondra_engine_ports::native_probe::Outcome::Finished);
     assert!(!count.exists(), "the disabled account must not run a native probe");
     assert!(domain.read().state().account_usage.is_empty(), "a disabled account's successful fake probe must not be published");
 }
@@ -212,11 +212,11 @@ async fn a_stale_usage_probe_retries_with_a_fresh_fence_and_makes_the_account_se
         schedule.probed.insert(account.clone(), now);
         let outcome = measure_account(&*domain, &home, &account).await;
         if attempt == 1 {
-            assert_eq!(outcome, crate::native_probe::Outcome::Stale);
+            assert_eq!(outcome, alondra_engine_ports::native_probe::Outcome::Stale);
             assert_eq!(domain.read().state().account_usage, before, "discarded usage cannot clear the quota fence");
             assert!(crate::accounts::select_for_launch(&*domain, &home, &intent, now).is_err());
         } else {
-            assert_eq!(outcome, crate::native_probe::Outcome::Finished);
+            assert_eq!(outcome, alondra_engine_ports::native_probe::Outcome::Finished);
         }
         schedule.finished(&account, outcome, now_millis());
     }

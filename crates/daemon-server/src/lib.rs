@@ -85,11 +85,11 @@ pub use alondra_daemon_engine::{
 #[cfg(test)]
 pub use alondra_engine_sdk::{account_move, auto_launch, bg_handover, domain_schedule_api, domain_schedule_runner, idle_release, provider_transition, sdk_owner, task_closer};
 #[cfg(test)]
-pub use alondra_engine_admission::{admission, machine_watch, pauses};
+pub use alondra_engine_admission::{admission, machine_state, machine_watch, pauses};
 #[cfg(test)]
 pub use alondra_engine_orchestrator::domain_orchestrator;
 #[cfg(test)]
-pub use alondra_daemon_engine::{domain_agent_lifecycle, machine_state};
+pub use alondra_daemon_engine::domain_agent_lifecycle;
 
 pub mod operation_journal;
 pub mod direct;

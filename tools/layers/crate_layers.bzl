@@ -59,7 +59,6 @@ CRATE_LAYERS = {
     "crates/daemon-support": PORTS,
     "crates/engine-kernel": APPLICATION,
     "crates/daemon-engine": APPLICATION,
-    "crates/daemon-engine-machine": APPLICATION,
     "crates/engine-admission": APPLICATION,
     "crates/engine-orchestrator": APPLICATION,
     "crates/engine-sdk": APPLICATION,
@@ -102,7 +101,6 @@ PRIVATE_TO = {
 # dependency uses, and its ceiling drops with every entry removed.
 LAYER_EXCEPTIONS = {
     "crates/daemon-engine": [
-        "crates/daemon-engine-machine",
         "crates/engine-github",
         "crates/engine-kernel",
         "crates/engine-live",
@@ -115,13 +113,11 @@ LAYER_EXCEPTIONS = {
         "crates/provider-codex",
     ],
     "crates/engine-admission": [
-        "crates/daemon-engine-machine",
     ],
     "crates/engine-github": [
         "crates/engine-kernel",
     ],
     "crates/engine-kernel": [
-        "crates/daemon-engine-machine",
     ],
     "crates/engine-live": [
         "crates/engine-kernel",
@@ -138,7 +134,6 @@ LAYER_EXCEPTIONS = {
         "crates/provider-codex",
     ],
     "crates/engine-sdk": [
-        "crates/daemon-engine-machine",
         "crates/engine-github",
         "crates/engine-kernel",
     ],

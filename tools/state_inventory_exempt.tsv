@@ -61,7 +61,7 @@ timer	crates/core/src/activity.rs::FOCUS_DEFAULT_MINUTES	declared and used nowhe
 timer	crates/core/src/activity.rs::FOCUS_MAX_MINUTES	declared and used nowhere in the code
 timer	crates/core/src/metrics/report.rs::DAY_MS	unit: milliseconds in a day, not a limit
 timer	crates/core/src/usage.rs::DAY_MINUTES	unit: minutes in a day, not a limit
-timer	crates/daemon-engine-machine/src/swap_disk.rs::MINUTE	unit: milliseconds in a minute, not a limit
+timer	crates/engine-admission/src/swap_disk.rs::MINUTE	unit: milliseconds in a minute, not a limit
 timer	crates/daemon-server/src/device_expiry.rs::DAY_MS	unit: milliseconds in a day, not a limit
 timer	crates/daemon-server/src/views/actions.rs::SCHEDULE_DATE_LIMIT_MILLIS	latest date a schedule accepts (year 2100), not a duration
 timer	crates/daemon-server/src/views/reset_time.rs::FIVE_HOURS	length of the 5-hour usage window, used only to format a reset time

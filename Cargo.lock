@@ -313,7 +313,6 @@ dependencies = [
  "alondra-agent-runtime",
  "alondra-codex-protocol",
  "alondra-core",
- "alondra-daemon-engine-machine",
  "alondra-daemon-engine-model",
  "alondra-daemon-support",
  "alondra-domain",
@@ -351,22 +350,6 @@ dependencies = [
  "tokio",
  "toml",
  "url",
-]
-
-[[package]]
-name = "alondra-daemon-engine-machine"
-version = "0.3.69"
-dependencies = [
- "alondra-core",
- "alondra-daemon-engine-model",
- "alondra-daemon-support",
- "alondra-domain-model",
- "alondra-engine-ports",
- "alondra-foundation",
- "anyhow",
- "serde_json",
- "tempfile",
- "tokio",
 ]
 
 [[package]]
@@ -521,7 +504,6 @@ name = "alondra-engine-admission"
 version = "0.3.69"
 dependencies = [
  "alondra-core",
- "alondra-daemon-engine-machine",
  "alondra-daemon-engine-model",
  "alondra-daemon-support",
  "alondra-domain",
@@ -595,7 +577,6 @@ version = "0.3.69"
 dependencies = [
  "alondra-agent-application",
  "alondra-core",
- "alondra-daemon-engine-machine",
  "alondra-daemon-engine-model",
  "alondra-daemon-support",
  "alondra-domain",
@@ -731,7 +712,6 @@ dependencies = [
  "alondra-codex-protocol",
  "alondra-core",
  "alondra-daemon-engine",
- "alondra-daemon-engine-machine",
  "alondra-daemon-engine-model",
  "alondra-daemon-support",
  "alondra-domain",

@@ -28,7 +28,6 @@ application_crate(
     test_visibility = ["//crates/daemon-server:__pkg__", "//crates/engine-sdk:__pkg__", "//crates/machine-model:__pkg__"],
     deps = all_crate_deps(normal = True) + WORKSPACE_DEPS + [
         "//crates/daemon-engine-model:daemon_engine_model",
-        "//crates/daemon-engine-machine:daemon_engine_machine",
         "//crates/daemon-support:daemon_support",
         "//crates/engine-github:engine_github",
         "//crates/engine-live:engine_live",
@@ -50,7 +49,6 @@ ENGINE_TEST_DEPS = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_
     "//crates/codex-protocol:codex_protocol",
     "//crates/daemon-engine-model:daemon_engine_model",
     "//crates/store-sqlite:store_sqlite",
-    "//crates/daemon-engine-machine:daemon_engine_machine",
     "//crates/daemon-support:daemon_support",
     "//crates/engine-doubles:engine_doubles",
     "//crates/engine-github:engine_github",

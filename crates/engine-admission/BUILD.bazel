@@ -26,7 +26,6 @@ application_crate(
     test_visibility = ["//crates/daemon-server:__pkg__", "//crates/engine-sdk:__pkg__", "//crates/machine-model:__pkg__"],
     version = VERSION,
     deps = all_crate_deps(normal = True) + WORKSPACE_DEPS + [
-        "//crates/daemon-engine-machine:daemon_engine_machine",
         "//crates/daemon-engine-model:daemon_engine_model",
         "//crates/daemon-support:daemon_support",
     ],
@@ -44,7 +43,6 @@ low_opt_rust_test(
     version = VERSION,
     deps = ["//crates/domain-rules:domain_rules"] + all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
         "//crates/engine-doubles:engine_doubles",
-        "//crates/daemon-engine-machine:daemon_engine_machine",
         "//crates/daemon-engine-model:daemon_engine_model",
         "//crates/daemon-support:daemon_support",
         "//crates/engine-kernel:engine_kernel",

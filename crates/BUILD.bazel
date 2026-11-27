@@ -32,7 +32,6 @@ WORKSPACE_MEMBERS = [
     "daemon-engine",
     "daemon-engine-model",
     "store-sqlite",
-    "daemon-engine-machine",
     "daemon-server",
     "daemon-support",
     "domain",

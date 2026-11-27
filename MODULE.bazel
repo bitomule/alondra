@@ -86,7 +86,6 @@ crate.from_cargo(
         "//crates/daemon-engine:Cargo.toml",
         "//crates/daemon-engine-model:Cargo.toml",
         "//crates/store-sqlite:Cargo.toml",
-        "//crates/daemon-engine-machine:Cargo.toml",
         "//crates/engine-kernel:Cargo.toml",
         "//crates/engine-github:Cargo.toml",
         "//crates/engine-live:Cargo.toml",

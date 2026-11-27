@@ -10,7 +10,7 @@ use alondra_daemon_engine::live::LiveOf as _;
 use alondra_engine_admission::pauses::*;
 use alondra_engine_admission::AdmissionOf as _;
 use alondra_engine_admission::admission::{Hold, Key, Limit, SPACING, Tuning, Waiting};
-use alondra_daemon_engine::machine_state::NoRoom;
+use alondra_engine_ports::machine::NoRoom;
 use alondra_daemon_engine::node_push::testing::Node;
 use alondra_daemon_engine::node_reports::{Envelope, Report};
 use alondra_core::{Machine, MemoryCompressor, MemoryPressure};

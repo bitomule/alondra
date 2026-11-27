@@ -25,6 +25,10 @@ class CheckoutTest(unittest.TestCase):
         found = guard.problems(checkout())
         self.assertEqual(found, [], "\n" + "\n".join(found))
 
+    def test_every_guarded_file_is_in_the_checkout(self):
+        missing = [name for name in guard.FILES if not (checkout() / "crates" / name).exists()]
+        self.assertEqual(missing, [])
+
 
 class GuardTest(unittest.TestCase):
     def setUp(self):
@@ -58,6 +62,16 @@ class GuardTest(unittest.TestCase):
         ]:
             self.write("src/a.rs", f"fn f() {{\n    {line}\n}}\n")
             self.assertEqual(len(guard.problems(self.root)), 1, line)
+
+    def test_only_the_guarded_files_of_engine_ports_are_read(self):
+        reading = "fn f() {\n    let a = std::time::Instant::now();\n}\n"
+        for name in ["machine.rs", "native_probe.rs", "agent_host.rs"]:
+            target = self.root / "crates" / "engine-ports" / "src" / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(reading)
+        found = guard.problems(self.root)
+        self.assertEqual([line.split(":")[0] for line in found],
+                         ["crates/engine-ports/src/machine.rs", "crates/engine-ports/src/native_probe.rs"])
 
     def test_a_reading_through_the_clock_passes(self):
         self.write("src/a.rs", "use alondra_core::clock;\nfn f() { clock::instant(); clock::sleep(d); clock::since(t); "
