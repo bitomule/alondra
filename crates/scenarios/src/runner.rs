@@ -216,7 +216,8 @@ const WATCHDOG: Duration = Duration::from_secs(120);
 
 /// Real time a wait for calm may last with nothing of the daemon moving: it watches for a hang,
 /// never decides that the daemon is calm. A daemon whose work keeps starting and ending, however
-/// slowly on a loaded Mac, is waited for; one that stopped ends the run with what is left.
+/// slowly on a loaded Mac, is waited for, and so is one whose threads or hosts' processes still wait
+/// for a core; one that stopped ends the run with what is left.
 const PATIENCE: Duration = Duration::from_secs(20);
 /// How often the daemon samples the Mac and the accounts' usage for the gauges the apps show: by
 /// then a scenario has started.
@@ -883,7 +884,8 @@ impl Context<'_> {
     /// blocking pool, the owners an input rang, the frames written to a host it has not handled),
     /// the daemon is attached to every host that runs and acknowledged what each said, and no
     /// takeover of a host is under way. The next step then reads what the daemon did. Past the
-    /// patience the run ends, naming what kept moving.
+    /// patience with nothing moving, and no host's process nor thread of the daemon waiting for a
+    /// core, the run ends, naming what is left.
     async fn settle(&self) -> Result<(), ScenarioError> {
         let started = Instant::now();
         let settled = self.wait_for_calm().await;
@@ -898,7 +900,7 @@ impl Context<'_> {
             let retaking = move || domain.as_ref().is_some_and(|domain| domain.retaking());
             let unsettled = alondra_core::clock::spawn_blocking_unwatched(move || {
                 let calm = || edge.committed() && !retaking();
-                if alondra_core::clock::until_idle(PATIENCE, calm) {
+                if edge.until_calm(PATIENCE, calm) {
                     return None;
                 }
                 let (working, frames) = (alondra_core::clock::working(), alondra_core::clock::frames_in_transit());
