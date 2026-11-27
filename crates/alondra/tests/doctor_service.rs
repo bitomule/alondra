@@ -340,6 +340,7 @@ fn a_daemon_that_holds_the_home_without_answering_and_has_no_job_is_reclaimed_af
 
     let (output, after) = mac.doctor(&["--fix", "--yes"]);
     assert_eq!(check(&after, "service")["status"], "pass", "{after}\n{}", stderr(&output));
+    assert!(!stderr(&output).contains("did not stop"), "an ended holder is not reported as running: {}", stderr(&output));
     assert!(!mac.alive(holder));
     assert_eq!(mac.daemon_version().as_deref(), Some("0.3.20"));
     let log = mac.launchctl_log();
@@ -356,6 +357,7 @@ fn a_holder_that_ignores_sigusr1_is_ended_so_the_service_takes_the_home() {
 
     let (output, after) = mac.doctor(&["--fix", "--yes"]);
     assert_eq!(check(&after, "service")["status"], "pass", "{after}\n{}", stderr(&output));
+    assert!(!stderr(&output).contains("did not stop"), "an ended holder is not reported as running: {}", stderr(&output));
     assert!(!mac.alive(holder));
     assert_eq!(mac.daemon_version().as_deref(), Some("0.3.20"));
 }

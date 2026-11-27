@@ -501,10 +501,24 @@ fn send(pid: i32, signal: i32) -> std::io::Result<()> {
     if error.raw_os_error() == Some(libc::ESRCH) { Ok(()) } else { Err(error) }
 }
 
+/// Whether `pid` still runs code. A process that ended stays in the table as a zombie until its
+/// parent waits for it, and `kill(pid, 0)` still succeeds on it, though it holds nothing: the HOME
+/// lock and its port are gone with its files. The kernel no longer describes a zombie.
+fn running(pid: i32) -> bool {
+    (unsafe { libc::kill(pid, 0) } == 0) && described(pid)
+}
+
+fn described(pid: i32) -> bool {
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    let read = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&raw mut info).cast(), size) };
+    read > 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+}
+
 fn gone(pid: i32, within: Duration, interval: Duration) -> bool {
     let polls = (within.as_millis() / interval.as_millis().max(1)).max(1);
     for _ in 0..polls {
-        if unsafe { libc::kill(pid, 0) } != 0 {
+        if !running(pid) {
             return true;
         }
         std::thread::sleep(interval);
@@ -1449,6 +1463,34 @@ mod brew_upgrade_tests {
         assert!(!disabled_in(listing, "com.example.alondra.other"));
         assert!(disabled_in(listing, "com.old"));
         assert!(!disabled_in(listing, "com.example"));
+    }
+
+    /// A child that exited and was not waited for: what a daemon the caller started becomes when
+    /// `doctor --fix` ends it, since nothing in the CLI is its parent.
+    fn zombie() -> i32 {
+        let child = unsafe { libc::fork() };
+        assert!(child >= 0, "fork");
+        if child == 0 {
+            unsafe { libc::_exit(0) };
+        }
+        while described(child) {
+            std::thread::yield_now();
+        }
+        child
+    }
+
+    #[test]
+    fn an_ended_process_nobody_waited_for_is_gone() {
+        let child = zombie();
+        assert_eq!(unsafe { libc::kill(child, 0) }, 0, "the table still lists it");
+        assert!(gone(child, Duration::from_millis(50), Duration::from_millis(10)));
+        let mut status = 0;
+        unsafe { libc::waitpid(child, &mut status, 0) };
+    }
+
+    #[test]
+    fn a_process_that_still_runs_is_never_gone() {
+        assert!(!gone(std::process::id() as i32, Duration::from_millis(30), Duration::from_millis(10)));
     }
 
     #[test]
