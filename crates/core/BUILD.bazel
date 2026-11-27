@@ -17,7 +17,7 @@ domain_crate(
     deps = CORE_DEPS,
 )
 
-exports_files(glob(["fixtures/*.jsonl"]))
+exports_files(glob(["fixtures/*.jsonl"]) + ["fixtures/antigravity-credentials.json"])
 
 low_opt_rust_test(
     name = "alondra_core_test",

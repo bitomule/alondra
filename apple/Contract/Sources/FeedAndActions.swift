@@ -32,6 +32,27 @@ public struct ActionInput: Codable, Equatable, Sendable {
     }
 }
 
+/// What a `dump`, a debugger or a `print` shows of an input: which parts it carries and how many,
+/// never their text, which can be a key or a secret answer.
+extension ActionInput: CustomReflectable, CustomStringConvertible, CustomDebugStringConvertible {
+    public var customMirror: Mirror {
+        Mirror(self, children: [
+            "text": text == nil ? "none" : "redacted",
+            "attachments": attachments?.count ?? 0,
+            "comments": comments?.count ?? 0,
+            "fields": fields.map { $0.keys.sorted() } ?? [],
+            "content": content.map { $0.keys.sorted() } ?? [],
+        ], displayStyle: .struct)
+    }
+
+    public var description: String {
+        "ActionInput(text: \(text == nil ? "none" : "redacted"), attachments: \(attachments?.count ?? 0), comments: \(comments?.count ?? 0), "
+            + "fields: \(fields.map { $0.keys.sorted() } ?? []), content: \(content.map { $0.keys.sorted() } ?? []))"
+    }
+
+    public var debugDescription: String { description }
+}
+
 public struct ActionComment: Codable, Equatable, Sendable {
     public let anchor: String
     public let text: String

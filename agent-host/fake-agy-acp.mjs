@@ -2,6 +2,7 @@
 // stdio and records what it receives under ALONDRA_FAKE_AGY_RECORD. Each prompt follows the
 // steps of ALONDRA_FAKE_AGY_SCRIPT (a JSON array with one array of steps per prompt); every wait
 // is on a message from the host, never on a timer.
+import { createHash } from 'node:crypto';
 import { appendFileSync, chmodSync, mkdirSync, statSync, writeFileSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -15,12 +16,15 @@ function record(name, value) {
   if (env.ALONDRA_FAKE_AGY_RECORD) appendFileSync(join(env.ALONDRA_FAKE_AGY_RECORD, name), JSON.stringify(value) + '\n');
 }
 const matches = (name) => env[name] === undefined ? null : env[name] === env.ALONDRA_FAKE_AGY_EXPECTED_KEY;
+const digest = (name) => env[name] === undefined ? null : createHash('sha256').update(env[name]).digest('hex');
 let tmpdirMode = null;
 try { if (env.TMPDIR) { const meta = statSync(env.TMPDIR); tmpdirMode = meta.isDirectory() ? meta.mode & 0o777 : null; } } catch { tmpdirMode = null; }
 record('starts.jsonl', {
   argv: args, cwd: process.cwd(), pid: process.pid, names: Object.keys(env).sort(),
   values: Object.fromEntries(RECORDED_VALUES.filter((key) => key in env).map((key) => [key, env[key]])),
   geminiKeyMatches: matches('GEMINI_API_KEY'), googleKeyMatches: matches('GOOGLE_API_KEY'), tmpdirMode,
+  // A digest, so a test checks which key arrived without the key reaching the record.
+  geminiKeySha256: digest('GEMINI_API_KEY'), googleKeySha256: digest('GOOGLE_API_KEY'),
 });
 // A folder of agy's TMPDIR the host cannot empty, as one a tool left read-only.
 if (env.ALONDRA_FAKE_AGY_LOCKED_TMPDIR === '1' && env.TMPDIR) {

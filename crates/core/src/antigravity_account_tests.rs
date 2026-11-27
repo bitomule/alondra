@@ -261,3 +261,28 @@ fn an_antigravity_account_stays_on_as_the_last_one_that_runs_nodes() {
     let claude_off = both.changed(Provider::Claude, &AccountChange::Disable { account: AccountId::default_account() }).unwrap();
     assert!(claude_off.any_enabled_globally(), "the Antigravity account runs nodes once the Claude one is off");
 }
+
+/// The list the Antigravity host strips is this one, and a key file's text reads by one rule on
+/// both sides: `fixtures/antigravity-credentials.json` holds both, and the host's tests read it too.
+#[test]
+fn the_host_and_the_daemon_share_the_credential_variables_and_the_key_file_rule() {
+    let rules: serde_json::Value = serde_json::from_str(include_str!("../fixtures/antigravity-credentials.json")).unwrap();
+    let mut shared: Vec<&str> = rules["credential_variables"].as_array().unwrap().iter().map(|name| name.as_str().unwrap()).collect();
+    let mut ours = CREDENTIAL_VARIABLES.to_vec();
+    shared.sort_unstable();
+    ours.sort_unstable();
+    assert_eq!(ours, shared);
+    for kind in rules["key_files"].as_array().unwrap() {
+        let name = kind["name"].as_str().unwrap();
+        let private = key_file_private(u32::from_str_radix(kind["mode"].as_str().unwrap(), 8).unwrap());
+        let Some(text) = kind["text"].as_str().filter(|text| private && kind["links"].is_null() && text.len() <= KEY_FILE_LIMIT) else {
+            assert_eq!(kind["reads"], "refused", "{name}");
+            continue;
+        };
+        match kind["reads"].as_str().unwrap() {
+            "key" => assert_eq!(key_in_file(text), Ok(kind["key"].as_str()), "{name}"),
+            "none" => assert_eq!(key_in_file(text), Ok(None), "{name}"),
+            _ => assert!(key_in_file(text).is_err(), "{name}"),
+        }
+    }
+}
