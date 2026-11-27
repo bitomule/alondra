@@ -773,3 +773,87 @@ fn every_unit_of_work_that_starts_or_ends_is_a_move() {
         assert_eq!(work.moves.load(Ordering::SeqCst) - before, 2);
     });
 }
+
+fn moves() -> u64 {
+    let Clock::Virtual { work, .. } = Clock::current() else { unreachable!("a virtual runtime") };
+    work.moves.load(Ordering::SeqCst)
+}
+
+/// A thread that looks again and again at a silent stream, each look ending on its own timeout,
+/// moves nothing: the owner of a host whose Claude works on a turn does that every quarter of a
+/// second, and must not keep a wait for calm that waits for something else from ever giving up.
+#[test]
+fn a_wait_for_a_stream_that_ends_on_its_timeout_moves_nothing() {
+    let runtime = VirtualRuntime::new(EPOCH).unwrap();
+    runtime.block_on(async {
+        let (reader, _writer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let bell = Bell::new().unwrap();
+        let looked = spawn_thread(move || {
+            assert!(!crate::readable(&reader, Duration::from_millis(1)).unwrap());
+            let before = moves();
+            for _ in 0..3 {
+                assert!(!crate::readable(&reader, Duration::from_millis(1)).unwrap());
+                assert!(!crate::readable_unless_rung(&reader, &bell, Duration::from_millis(1)).unwrap());
+            }
+            moves() - before
+        });
+        assert_eq!(looked.join().unwrap(), 0, "six looks that found nothing moved the daemon");
+    });
+}
+
+/// A wait for a stream that its writer ends still moves the daemon, after any number of looks that
+/// found nothing.
+#[test]
+fn a_wait_for_a_stream_its_writer_ends_moves_the_daemon() {
+    use std::io::Write as _;
+    let runtime = VirtualRuntime::new(EPOCH).unwrap();
+    runtime.block_on(async {
+        let (reader, mut writer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let (go, gone) = std::sync::mpsc::channel::<()>();
+        let looked = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let looking = looked.clone();
+        let thread = spawn_thread(move || {
+            assert!(!crate::readable(&reader, Duration::from_millis(1)).unwrap());
+            looking.store(true, Ordering::SeqCst);
+            let read = crate::readable(&reader, HOUR).unwrap();
+            gone.recv().ok();
+            read
+        });
+        until("the thread waits for its stream after a look that found nothing", || looked.load(Ordering::SeqCst) && working() == 0).await;
+        let before = moves();
+        writer.write_all(b"x").unwrap();
+        until("the write woke the thread", || moves() > before).await;
+        assert_eq!(moves() - before, 1, "the write woke the thread, which works again");
+        assert_eq!(working(), 1);
+        go.send(()).unwrap();
+        assert!(thread.join().unwrap());
+    });
+}
+
+/// A wait for calm gives up after its patience while a thread does nothing but look at a silent
+/// stream: before, each look that ended on its timeout counted as the daemon moving, and the wait
+/// lasted as long as the looks did, for ever with a host whose turn never ends.
+#[test]
+fn a_wait_for_calm_gives_up_while_a_thread_only_looks_at_a_silent_stream() {
+    use std::sync::atomic::AtomicBool;
+    const LOOKS: usize = 20_000;
+    let runtime = VirtualRuntime::new(EPOCH).unwrap();
+    runtime.block_on(async {
+        let (reader, _writer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let (gave_up, looks) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicUsize::new(0)));
+        let (stop, counting) = (gave_up.clone(), looks.clone());
+        let looking = spawn_thread(move || {
+            while !stop.load(Ordering::SeqCst) && counting.load(Ordering::SeqCst) < LOOKS {
+                assert!(!crate::readable(&reader, Duration::from_millis(1)).unwrap());
+                counting.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+        until("the thread looked at its stream twice", || looks.load(Ordering::SeqCst) >= 2).await;
+        let calm = spawn_blocking_unwatched(|| until_idle(Duration::from_millis(100), || false)).await.unwrap();
+        gave_up.store(true, Ordering::SeqCst);
+        looking.join().unwrap();
+        assert!(!calm);
+        let looked = looks.load(Ordering::SeqCst);
+        assert!(looked < LOOKS, "the wait for calm lasted while the thread only looked at a silent stream, {looked} times");
+    });
+}

@@ -17,8 +17,12 @@ pub fn readable(stream: &UnixStream, timeout: Duration) -> io::Result<bool> {
     if ready || timeout.is_zero() {
         return Ok(ready);
     }
-    let _waiting = crate::clock::stream_wait();
-    poll_once(stream, timeout)
+    let waiting = crate::clock::stream_wait();
+    let ready = poll_once(stream, timeout);
+    if matches!(ready, Ok(false)) {
+        waiting.timed_out();
+    }
+    ready
 }
 
 /// `readable`, ended early by `bell`: false when a ring came first. The thread rests while it
@@ -31,7 +35,7 @@ pub fn readable_unless_rung(stream: &UnixStream, bell: &crate::clock::Bell, time
         crate::clock::rest();
         ready = poll_both(stream, bell, timeout);
     }
-    crate::clock::woke(work, rested, bell.disarm());
+    crate::clock::woke(work, rested, bell.disarm(), !matches!(ready, Ok((false, false))));
     let (readable, rung) = ready?;
     if rung {
         bell.silence();
