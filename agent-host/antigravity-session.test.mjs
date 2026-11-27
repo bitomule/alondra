@@ -246,6 +246,33 @@ for (const [name, change] of [
   });
 }
 
+test('a session answers far more requests than it keeps, and a request agy sends again gets the answer already given', { timeout: 30000 }, async (t) => {
+  // The first turn alone asks more than the host keeps; its last request comes again after more than that many answers.
+  const turn = (count, repeated) => [...Array.from({ length: count }, (_, n) => ({ permission: { command: `step ${n}`, ...(repeated.includes(n) ? { repeat: true } : {}) } })), { end: 'end_turn' }];
+  const f = fixture(t, { script: [turn(300, [0, 299]), turn(100, [0])] });
+  const ended = f.session.finished.then(() => undefined);
+  await f.session.offer(input(3), 'First');
+  f.session.offer(input(4), 'Second');
+  let from = 0;
+  const denied = new Set([1, 300, 301]);
+  for (let n = 1; n <= 400; n += 1) {
+    const asked = await Promise.race([f.next((event) => event.type === 'decision_requested', from), ended]);
+    assert.ok(asked, `request ${n} reached a card before the session ended (${f.session.failure})`);
+    from = f.events.indexOf(asked) + 1;
+    assert.equal(asked.request_id, `string:${n}`);
+    const decision = denied.has(n) ? { behavior: 'deny', message: 'No' } : { behavior: 'allow', updated_input: { optionId: 'allow' } };
+    assert.equal(f.session.respond(request(asked, f.events), decision), true);
+  }
+  const second = await Promise.race([f.next((event) => method('alondra/promptEnded')(event) && event.payload.params.inputId === input(4)), ended]);
+  assert.ok(second, `the second turn ended before the session (${f.session.failure})`);
+  assert.equal(f.session.failure, undefined);
+  assert.equal(f.events.filter((event) => event.type === 'decision_requested').length, 400, 'a request sent again is not asked again');
+  const answers = (id) => f.messages().filter((message) => message.id === id && message.method === undefined).map((message) => message.result.outcome.optionId);
+  assert.deepEqual(answers('1'), ['deny', 'deny']);
+  assert.deepEqual(answers('300'), ['deny', 'deny']);
+  assert.deepEqual(answers('301'), ['deny', 'deny']);
+});
+
 test('a new session is kept only once the prompt carrying its instructions is sent, and a resume without one takes the handoff', { timeout: 30000 }, async (t) => {
   const f = fixture(t, { env: { ALONDRA_FAKE_AGY_SYSTEM_PROMPT: '0' }, worker: { handoff_context: 'Context of the conversation so far' } });
   await f.next(method('alondra/sessionReady'));

@@ -102,6 +102,12 @@ async function runPrompt(id) {
       send({ id: request, method: 'session/request_permission', params: { sessionId: state.session, toolCall: call, options } });
       if (step.permission.wait === false) continue;
       await answered;
+      // agy asks again with the same id and the same question, and takes the answer it gets.
+      if (step.permission.repeat) {
+        const again = answerRequest(request);
+        send({ id: request, method: 'session/request_permission', params: { sessionId: state.session, toolCall: call, options } });
+        await again;
+      }
       if (mine.cancelled) { finish('cancelled'); return; }
     }
     if (step.hold) {

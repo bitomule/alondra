@@ -14,6 +14,8 @@ const ACP_PROTOCOL = 1;
 const MAX_NATIVE_LINE = 4 * 1024 * 1024;
 const MAX_PENDING = 64;
 const MAX_QUEUED = 64;
+/** A request belongs to the turn that asked it: its answer is kept to repeat until the turn ends, the oldest dropped past this many. */
+const MAX_ANSWERED = 256;
 const MAX_PROMPT_BYTES = 900_000;
 /** The largest key file read, and the longest key it may hold: the daemon's `KEY_FILE_LIMIT` and `KEY_LIMIT`. */
 const MAX_KEY_FILE_BYTES = 4096;
@@ -642,6 +644,7 @@ export class AntigravitySession implements HostSession {
   private endTurn(turn: Turn): void {
     if (this.turn !== turn) return;
     this.cancelAsked();
+    this.answered.clear();
     this.turn = undefined;
     void this.pump();
   }
@@ -679,7 +682,6 @@ export class AntigravitySession implements HostSession {
     if (this.mode === 'dontAsk') { this.reply(id, select(first('reject_once'))); return; }
     const tool = text(toolCall.toolCallId);
     if (!tool || options.length === 0) { this.reply(id, cancelled); return; }
-    if (this.answered.size >= 256) { this.fail('native_decision_capacity'); return; }
     if (this.asked.size >= MAX_PENDING) { this.fail('native_decision_capacity'); return; }
     const kind: DecisionKind = first('allow_once') || first('reject_once') ? 'permission' : 'question';
     const title = text(toolCall.title) ?? text(toolCall.kind) ?? 'tool';
@@ -695,6 +697,7 @@ export class AntigravitySession implements HostSession {
   }
   private answer(id: RequestId, key: string, identity: string, result: Json): Promise<void> {
     this.answered.set(key, { identity, result });
+    if (this.answered.size > MAX_ANSWERED) this.answered.delete(this.answered.keys().next().value!);
     return this.send({ id, result });
   }
   /** An answer the host gives by itself. It is not kept: a repeated request is decided again. */
