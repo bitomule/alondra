@@ -253,19 +253,27 @@ async fn a_change_of_role_reads_as_done_only_once_its_selection_is_published() {
     slice.domain.stop_sdk_owners();
 }
 
+/// The owner that takes over the author's host hands it the user's approval only once the gate
+/// gives its turn a slot: with none, the author's turn stays open for as long as the test looks.
 #[tokio::test]
 async fn an_author_still_in_its_turn_keeps_its_host_and_hands_over_once_it_rests() {
     let slice = Slice::new();
     let (driver, author) = approved_author(&slice);
     assert!(request_stage(&slice.domain));
+    gate(&slice.domain, 0);
     for _ in 0..2 {
         assert_eq!(look(&slice.domain).await.unwrap(), Phase::Draining, "the author has not ended its turn");
     }
-    assert!(Slice::lifecycle(&*slice.domain).turn().is_some());
+    let lifecycle = Slice::lifecycle(&*slice.domain);
+    assert!(lifecycle.turn().is_some());
+    assert!(lifecycle.answer_goes_on(), "the approval waits for a slot of the gate");
     assert_eq!(stage_steps(&slice), ["requested", "draining"]);
     assert!(!ended_since_admitted(&slice.domain), "its host is not stopped");
     assert!(slice.domain.owns_sdk_host(&author), "the change of role takes over the author's host so its turn can end");
     drop(driver);
+    gate(&slice.domain, 6);
+    let home = slice.domain.home().to_path_buf();
+    crate::admission::pass(&*slice.domain, &home).await.unwrap();
     handed_over(&slice, &slice.domain).await;
     assert_eq!(admissions(&slice.domain), 2);
     slice.domain.stop_sdk_owners();
