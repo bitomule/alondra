@@ -197,3 +197,48 @@ fn a_compacted_journal_starts_after_the_acknowledged_events_and_keeps_the_unreso
     let ahead = read(&directory, 6).unwrap();
     assert_eq!(ahead.events().iter().map(|event| event.cursor).collect::<Vec<_>>(), [7], "what the store already has is left out");
 }
+
+fn exited(cursor: u64) -> Vec<u8> {
+    encode(&Frame::new(Body::Event(Event {
+        fence: fence(),
+        execution: execution(1),
+        cursor,
+        observation: Observation::ProcessExited { exit_code: Some(143), signal: None },
+    })))
+    .unwrap()
+}
+
+/// 27 November: the disk filled while a node worked. The host's write of event 465 landed but its
+/// fsync failed, so the host never counted it and wrote its exit under cursor 465 too. Every
+/// takeover then refused the whole journal, through restarts, pauses and «Try again», and no host
+/// ever resumed the session. What the host wrote before that break is evidence; nothing after it
+/// is, so a command it does not show stays uncertain.
+#[test]
+fn a_cursor_written_twice_ends_the_journal_there_and_leaves_the_rest_uncertain() {
+    let directory = directory();
+    let taken = command("taken", "a");
+    let (first, second) = (event(1, 1), event(2, 1));
+    outbox(&directory, &[&taken, &receipt(&taken, ReceiptOutcome::Accepted { phase: ReceiptPhase::Offered }), &first, &second, &exited(2), &event(3, 1)]);
+    for committed in [0, 1] {
+        let journal = read(&directory, committed).expect("a cursor written twice is damage, not another host's journal");
+        assert_eq!(journal.events().iter().map(|event| event.cursor).collect::<Vec<_>>(), (committed + 1..=2).collect::<Vec<_>>());
+        assert_eq!(journal.events().last().unwrap().payload, second[4..], "the first event written under the cursor is the one kept");
+        assert_eq!(journal.last_cursor(), 2, "the next host continues after the last event kept");
+        assert_eq!(journal.retained(&taken).unwrap(), Retained::Offered, "a receipt before the break is still evidence");
+        assert_eq!(journal.retained(&command("unseen", "b")).unwrap(), Retained::AdmittedOnly, "past the break nothing proves a command was never taken");
+    }
+    let caught_up = read(&directory, 2).unwrap();
+    assert_eq!(caught_up.events().len(), 0, "with the repeated cursor in the store, nothing after the break comes back");
+    assert_eq!(caught_up.last_cursor(), 2);
+    assert_eq!(caught_up.retained(&command("unseen", "b")).unwrap(), Retained::AdmittedOnly);
+}
+
+#[test]
+fn a_cursor_skipped_ends_the_journal_there_and_leaves_the_rest_uncertain() {
+    let directory = directory();
+    outbox(&directory, &[&event(1, 1), &event(3, 1), &event(4, 1)]);
+    let journal = read(&directory, 0).unwrap();
+    assert_eq!(journal.events().iter().map(|event| event.cursor).collect::<Vec<_>>(), [1]);
+    assert_eq!(journal.last_cursor(), 1);
+    assert_eq!(journal.retained(&command("unseen", "b")).unwrap(), Retained::AdmittedOnly);
+}

@@ -3631,6 +3631,9 @@ mod release_tests;
 #[cfg(not(feature = "real-hosts"))]
 #[path = "capability_tests.rs"]
 mod capability_tests;
+#[cfg(not(feature = "real-hosts"))]
+#[path = "journal_damage_tests.rs"]
+mod journal_damage_tests;
 
 #[cfg(not(feature = "real-hosts"))]
 #[test]

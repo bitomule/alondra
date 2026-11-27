@@ -564,6 +564,21 @@ impl ClaudeModel {
         }
     }
 
+    /// The host of `task` dies as the full disk of 27 November left one: its journal ends with its
+    /// last event written twice, under one cursor.
+    pub fn kill_on_a_full_disk(&self, task: &str) {
+        let Some(host) = self.running(task) else { return };
+        {
+            let mut state = lock(&host.state);
+            let landed = json!({"type": "sdk", "kind": "status", "native": {}, "failures": [],
+                "payload": {"type": "system", "subtype": "status", "status": null, "session_id": host.session}});
+            if let Err(why) = state.wire.journal_twice(&host.bootstrap, landed) {
+                self.troubled(why);
+            }
+        }
+        host.end(false);
+    }
+
     /// Whether the host whose process goes by `process_id` still runs.
     pub fn runs(&self, process_id: u32) -> bool {
         self.host(process_id).is_some_and(|host| host.alive())

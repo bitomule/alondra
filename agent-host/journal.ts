@@ -9,6 +9,9 @@ export type CommandRecord = { command: Command; raw: Buffer; digest: string; rec
 /** A command the owner can no longer send again: what is left of it answers a copy that arrives anyway. */
 export type SettledCommand = { digest: string; receipt?: Frame & { body: Receipt } };
 export type Limits = { retainedBytes: number; compactAt: number };
+/** Appends a record and makes it durable; a throw leaves unknown how much of it reached the disk. */
+export type Write = (fd: number, bytes: Buffer) => void;
+const durably: Write = (fd, bytes) => { appendFileSync(fd, bytes); fsyncSync(fd); };
 /** The evidence the daemon has not acknowledged yet, at most: past it the host takes no more rather than lose any. */
 const RETAINED_BYTES = 64 * 1024 * 1024;
 /** A journal this large whose acknowledged part is at least half is rewritten with only what is still needed. */
@@ -26,6 +29,12 @@ export class Journal {
   private sequence = 0;
   private loading = true;
   private worked = false;
+  /**
+   * A write that failed (a full disk) may have left all its bytes in the journal, or part of them:
+   * the journal no longer knows where it ends, so it takes nothing more. A record written after
+   * that one would carry the cursor the host never counted, a second time.
+   */
+  private broken = false;
   private attached?: Buffer;
   private acknowledgement?: { raw: Buffer; attached: Buffer };
   private eventBytes = new Map<number, Buffer>();
@@ -41,7 +50,7 @@ export class Journal {
   readonly uncertainPath: string;
   private readonly nextPath: string;
   /** `base` is the cursor the execution's previous host ended at: this journal's events continue from it. */
-  constructor(private directory: string, private validateBinding: (frame: Frame) => void, base = 0, limits: Partial<Limits> = {}) {
+  constructor(private directory: string, private validateBinding: (frame: Frame) => void, base = 0, limits: Partial<Limits> = {}, private write: Write = durably) {
     this.limits = { retainedBytes: RETAINED_BYTES, compactAt: COMPACT_AT, ...limits };
     this.cursor = base; this.acknowledged = base;
     this.path = join(directory, 'outbox'); this.uncertainPath = join(directory, 'uncertain'); this.nextPath = join(directory, 'outbox.next');
@@ -68,11 +77,15 @@ export class Journal {
     return fd;
   }
   append(frame: Frame, original?: Buffer): void {
+    if (this.broken) throw new Error('Journal write failed before');
     const bytes = original ? framed(original) : encode(frame);
     const decoded = parsePayload(bytes.subarray(4));
     if (['command', 'receipt', 'event'].includes(decoded.body.type) && this.retained + bytes.length > this.limits.retainedBytes) throw new Error('Journal capacity');
     this.validateRecord(decoded, bytes.subarray(4));
-    appendFileSync(this.fd, bytes); fsyncSync(this.fd); this.bytes += bytes.length;
+    this.broken = true;
+    this.write(this.fd, bytes);
+    this.broken = false;
+    this.bytes += bytes.length;
     this.apply(decoded, bytes.subarray(4));
     if (decoded.body.type === 'acknowledge' && this.bytes > this.limits.compactAt && 2 * this.retained <= this.bytes) this.compact();
   }
