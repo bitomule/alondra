@@ -38,7 +38,9 @@ See [doctor](../crates/cli/src/doctor/system.rs), [uploads](../crates/engine-por
 Building from source additionally runs Bazel and its downloaded Rust, Swift and Node toolchains,
 and the two programs `bazel/env/tools.bzl` pins: `simpool` and `musts`, downloaded over HTTPS from
 their GitHub releases, checked against a SHA-256 and kept in Bazel's output base. The snapshot tests
-run that `simpool` to lease iOS simulators from the pool in `~/Library/Developer/SimPool`. The first
+run that `simpool` to lease iOS simulators from the pool in `~/Library/Developer/SimPool`. The
+TriageTouch UI test instead creates one simulator of its own per run with `simctl` (a name unique to
+the run, under `~/Library/Developer/CoreSimulator`) and deletes it when the run ends. The first
 Bazel command also writes two launcher scripts, `musts` and `simpool`, into `~/.local/bin` (never over
 a file it did not write) so both work in any shell; see [bazel/env/README.md](../bazel/env/README.md).
 Rustc and clippy keep about 7 GB of incremental state for this repository's libraries and binaries in

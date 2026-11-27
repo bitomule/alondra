@@ -7,4 +7,18 @@ sh_binary(
     visibility = ["//apple/Testing:__subpackages__"],
 )
 
+# A runner's `create_simulator_action`: a device of its own per run (see the script).
+sh_binary(
+    name = "create_simulator",
+    srcs = ["create_simulator.py"],
+    visibility = ["//apple/Testing:__subpackages__"],
+)
+
+sh_test(
+    name = "create_simulator_test",
+    size = "small",
+    srcs = ["create_simulator_test.py"],
+    data = ["create_simulator.py"],
+)
+
 repo_tree()
