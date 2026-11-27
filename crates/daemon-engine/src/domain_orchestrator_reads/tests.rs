@@ -84,7 +84,7 @@ fn tasks_in_progress_lists_live_agents_what_waits_on_someone_and_the_requests() 
     let open: Vec<&str> = answer["open_questions"].as_array().unwrap().iter().map(|q| q["id"].as_str().unwrap()).collect();
     assert_eq!(open, ["q-open", "q-orch"], "a withdrawn question waits on nobody");
     assert_eq!(answer["open_questions"][1]["to_orchestrator"], true);
-    assert_eq!(answer["open_questions"][0]["title"], "Question q-open");
+    assert_eq!(answer["open_questions"][0]["title"], "Answer the question", "the title of the card, not the first line of the body");
     let report = &answer["reports"][0];
     assert_eq!((report["id"].as_str(), report["read"].as_bool(), report["node_name"].as_str()), (Some("info"), Some(false), Some("Alondra")));
     assert_eq!(answer["orchestrator_messages"].as_array().unwrap().len(), 2, "the new request and the question for the orchestrator are on their way");
@@ -92,6 +92,41 @@ fn tasks_in_progress_lists_live_agents_what_waits_on_someone_and_the_requests() 
     let t2 = answer["tasks"].as_array().unwrap().iter().find(|t| t["id"] == "t2").unwrap();
     assert_eq!((t2["depends_on"].clone(), t2["assignee"].clone()), (json!(["t1"]), Value::Null));
     assert_eq!(answer["machine"]["cpus"], 10);
+}
+
+/// A plan whose body opens with a heading of its own is still listed under the title of its card.
+#[test]
+fn a_held_plan_and_a_notice_are_listed_under_the_title_of_their_card_not_the_first_line_of_their_body() {
+    let f = world();
+    let task_scope = Scope::Task { task_id: "t1".into() };
+    let plan_body = "## Qué propongo\n\n- [ ] Fix the editor";
+    run(&f.1, Actor::System, Command::HoldHook {
+        interaction_id: "plan-call".into(), task_id: "t1".into(), agent_id: "agent-a".into(), hold: alondra_domain_model::Hold::Plan,
+        body: plan_body.into(), options: alondra_domain_model::Hold::Plan.options(),
+        card: alondra_domain_model::CardSpec::new(alondra_domain_model::CardKind::Review, "Title t1")
+            .content(alondra_domain_model::ContentKind::Plan, plan_body),
+    });
+    run(&f.1, Actor::System, Command::PublishInformation { attachments: vec![], interaction_id: "info".into(), scope: task_scope,
+        recipient: Recipient::User, body: "## Qué encontré\n\nThe colour table".into(),
+        card: alondra_domain_model::CardSpec::new(alondra_domain_model::CardKind::Know, "Colour table found") });
+    let answer = tasks_in_progress(&f.1, json!({}), json!(null)).unwrap();
+    let plan = answer["open_questions"].as_array().unwrap().iter().find(|q| q["id"] == "plan-call").expect("the plan waits on the user");
+    assert_eq!(plan["title"], "Title t1");
+    assert_eq!(plan["detail"], plan_body, "the detail keeps the whole body");
+    let notice = answer["reports"].as_array().unwrap().iter().find(|r| r["id"] == "info").unwrap();
+    assert_eq!(notice["title"], "Colour table found");
+}
+
+/// A card stored before cards had a title has only its body to name it.
+#[test]
+fn a_card_stored_without_a_title_is_listed_under_the_first_line_of_its_body() {
+    let f = world();
+    let mut state = (*f.1.state().unwrap()).clone();
+    ask(&f.1, "q-old", Recipient::User, Scope::Task { task_id: "t1".into() }, agent_a());
+    state = (*f.1.state().unwrap()).clone();
+    let mut old = state.interactions[&"q-old".into()].clone();
+    old.card.title = None;
+    assert_eq!(question(&old, &state).unwrap()["title"], "Question q-old");
 }
 
 #[test]
