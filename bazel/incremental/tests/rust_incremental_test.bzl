@@ -16,7 +16,10 @@ def _compiles_incrementally_impl(ctx):
     asserts.equals(env, ["-Cincremental=" + INCREMENTAL_STATE], _incremental_flags(rustc))
     return analysistest.end(env)
 
-compiles_incrementally_test = analysistest.make(_compiles_incrementally_impl)
+compiles_incrementally_test = analysistest.make(
+    _compiles_incrementally_impl,
+    config_settings = {str(Label("//bazel/incremental")): True},
+)
 
 def _compiles_from_scratch_impl(ctx):
     env = analysistest.begin(ctx)
