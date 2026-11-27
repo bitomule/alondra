@@ -2133,8 +2133,7 @@ async fn an_execution_the_start_could_not_take_over_gets_a_card_and_try_again_re
     restarted.join_retakes();
     let agent = restarted.state().unwrap().tasks[&TaskId::from(TASK)].agent_id.clone().unwrap();
     assert!(restarted.owns_sdk_host(&agent), "the execution was taken over again");
-    let mut changed = restarted.subscribe();
-    changed.wait_for(|_| slice.hosts.prompts().last().is_some_and(|prompt| prompt.starts_with("Your session was cut off when its host stopped"))).await.unwrap();
+    until_told_resumed(&slice);
     restarted.stop_sdk_owners();
     let starts = slice.starts();
     assert_eq!(starts.last().unwrap()["resume"].as_str(), Some(session.as_str()), "the same session is resumed: {starts:?}");
@@ -2398,8 +2397,7 @@ async fn try_again_on_a_task_whose_ended_host_left_a_refused_plan_resumes_its_se
     restarted.join_retakes();
     let agent = restarted.state().unwrap().tasks[&TaskId::from(TASK)].agent_id.clone().unwrap();
     assert!(restarted.owns_sdk_host(&agent), "the execution was taken over again: {:?}", open_card(&restarted, HOST_LOST_PREFIX).and_then(|card| card.card.content));
-    let mut changed = restarted.subscribe();
-    changed.wait_for(|_| slice.hosts.prompts().last().is_some_and(|prompt| prompt.starts_with("Your session was cut off when its host stopped"))).await.unwrap();
+    until_told_resumed(&slice);
     restarted.stop_sdk_owners();
     let starts = slice.starts();
     assert_eq!(starts.last().unwrap()["resume"].as_str(), Some(session.as_str()), "the same session is resumed: {starts:?}");
@@ -3665,6 +3663,23 @@ pub async fn until_last_prompt_ends_with(domain: &DomainRuntime, hosts: &impl su
     changed.wait_for(|_| not_wakes(hosts.prompts().into_iter()).last().is_some_and(|prompt| prompt.ends_with(text))).await.unwrap();
 }
 
+/// How long a test waits for a prompt before it fails: far past what the slowest run takes, so
+/// only a prompt that never comes reaches it.
+#[cfg(not(feature = "real-hosts"))]
+const PROMPT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Waits on the host model until Claude took the prompt that tells a resumed session it was cut
+/// off. Claude answers it, and the empty turn that ends draws wakes after it: the wait reads the
+/// prompts but the wakes, so a test that looks late still finds it. It wakes on each prompt Claude
+/// takes, not on what the daemon records after it, and fails past [`PROMPT_DEADLINE`].
+#[cfg(not(feature = "real-hosts"))]
+fn until_told_resumed(slice: &Slice) {
+    let told = |prompts: &[String]| not_wakes(prompts.iter().cloned()).last().is_some_and(|prompt| prompt.starts_with("Your session was cut off when its host stopped"));
+    if let Err(prompts) = tokio::task::block_in_place(|| slice.hosts.model().until_prompts(PROMPT_DEADLINE, told)) {
+        panic!("the resumed session was not told it was cut off within {PROMPT_DEADLINE:?}: {prompts:?}");
+    }
+}
+
 #[cfg(not(feature = "real-hosts"))]
 // 30 October: a node read «Answering you» doing nothing, and what the user wrote to it never reached
 // it. Its execution had no owner in the daemon: its host's owner was gone and nothing took it over,
@@ -4294,18 +4309,18 @@ async fn a_takeover_the_full_disk_refused_waits_for_space_and_then_resumes_the_s
     restarted.join_retakes();
     assert!(!restarted.owns_sdk_host(&agent), "a sample that measures the disk full takes nothing over");
     assert!(restarted.sdk_owners().waiting_for_space.lock().unwrap().contains(&task));
-    loop {
+    let healthy = crate::machine_watch::HEALTHY_SAMPLES;
+    for sample in 1..healthy {
         crate::machine_watch::look(&*restarted, disk(400_000_000_000));
-        if !restarted.gate().disk_low() {
-            break;
-        }
+        assert!(restarted.gate().disk_low(), "sample {sample} of space ended the disk's incident before {healthy} in a row");
     }
+    crate::machine_watch::look(&*restarted, disk(400_000_000_000));
+    assert!(!restarted.gate().disk_low(), "{healthy} samples of space in a row end the disk's incident");
     restarted.join_retakes();
     assert!(restarted.owns_sdk_host(&agent), "the sample that measured space took the execution over");
     assert!(restarted.sdk_owners().waiting_for_space.lock().unwrap().is_empty());
     assert!(open_card(&restarted, HOST_LOST_PREFIX).is_none());
-    let mut changed = restarted.subscribe();
-    changed.wait_for(|_| slice.hosts.prompts().last().is_some_and(|prompt| prompt.starts_with("Your session was cut off when its host stopped"))).await.unwrap();
+    until_told_resumed(&slice);
     restarted.stop_sdk_owners();
     let starts = slice.starts();
     assert_eq!(starts.last().unwrap()["resume"].as_str(), Some(session.as_str()), "the same session is resumed: {starts:?}");

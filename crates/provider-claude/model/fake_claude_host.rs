@@ -522,6 +522,23 @@ impl ClaudeModel {
         lock(&self.0.prompts).clone()
     }
 
+    /// Waits until the prompts Claude took `hold` what a test looks for, read again each time Claude
+    /// takes one, so the wait ends on the prompt itself and not on what the daemon records after
+    /// it. Past `within` it gives up and returns the prompts as they are, so a prompt that never
+    /// comes fails the test instead of hanging it.
+    pub fn until_prompts(&self, within: std::time::Duration, holds: impl Fn(&[String]) -> bool) -> Result<Vec<String>, Vec<String>> {
+        let deadline = std::time::Instant::now() + within;
+        let mut moved = lock(&self.0.moved.0);
+        loop {
+            let prompts = self.prompts();
+            if holds(&prompts) {
+                return Ok(prompts);
+            }
+            let Some(left) = deadline.checked_duration_since(std::time::Instant::now()).filter(|left| !left.is_zero()) else { return Err(prompts) };
+            moved = self.0.moved.1.wait_timeout(moved, left).unwrap_or_else(std::sync::PoisonError::into_inner).0;
+        }
+    }
+
     /// The processes Claude left running in the background, in the order they started: a command
     /// it waits on (`background-command`) replaces what was there, as the fake native Claude
     /// records them.
@@ -826,6 +843,7 @@ impl ClaudeModel {
             return;
         }
         lock(&self.0.prompts).push(prompt.clone());
+        self.tick();
         *lock(&self.0.sessions).entry(host.session.to_lowercase()).or_default() += 1;
         match turns {
             Turns::Played => self.queue(host, state, input, prompt),
