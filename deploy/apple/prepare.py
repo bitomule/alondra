@@ -275,6 +275,13 @@ def verify_pkg_contents(pkg):
     require(not problems, "Installer package would be rejected by App Store Connect: " + "; ".join(problems[:5]))
 
 
+def built_archive(execution_root, outputs, suffix):
+    """cquery paths are relative to the execution root, which the checkout need not link."""
+    archives = [Path(execution_root) / path for path in outputs if path.endswith(suffix)]
+    require(len(archives) == 1, "Expected one Bazel archive")
+    return archives[0]
+
+
 def snapshot_archive(source, directory, destination):
     # Bazel outputs may be replaced by another invocation. All subsequent reads,
     # validation and packaging must use this independent private copy.
@@ -408,9 +415,7 @@ def main():
     run(*bazel, "build", target, *flags)
     artifacts = run(*bazel, "cquery", target, *flags, "--output=files").decode().splitlines()
     suffix = ".ipa" if args.destination == "ios" else ".zip"
-    archives = [ROOT / p for p in artifacts if p.endswith(suffix)]
-    require(len(archives) == 1, "Expected one Bazel archive")
-    source = archives[0]
+    source = built_archive(run(*bazel, "info", "execution_root").decode().strip(), artifacts, suffix)
     require(all(digest(path) == profile_hashes[key] for key, path in profiles.items()), "Profile changed during build")
     require(run("git", "-C", ROOT, "rev-parse", "HEAD").decode().strip() == source_commit
             and not uncommitted(run("git", "-C", ROOT, "status", "--porcelain", "--untracked-files=normal")), "Source changed during build")
