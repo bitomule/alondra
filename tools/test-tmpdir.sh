@@ -287,7 +287,23 @@ for stale in "$root"/bt.*; do
     kill -0 "$owner" 2>/dev/null || remove "$stale"
 done
 
-dir=$(mktemp -d "$root/bt.XXXXXX") || exec python3 -c "$launcher" "$@"
+# /usr/bin/python3 is an Xcode shim: with no entry in xcrun_db for the HOME, which is a new file for
+# every test, it first runs xcodebuild to find python3. That is about a second on an idle Mac and
+# most of a minute on a loaded one, before the test starts and in every test, and the test of a
+# 0.2 s target then fails as TIMEOUT. The developer directory's own python3 is the program the shim
+# ends up running, with no question asked. ALONDRA_TEST_PYTHON names it for the tests that run a
+# script themselves, so that they do not ask either.
+python=python3
+developer=${DEVELOPER_DIR:-$(readlink /var/db/xcode_select_link 2>/dev/null)}
+for candidate in ${developer:+"$developer/usr/bin/python3"} /Library/Developer/CommandLineTools/usr/bin/python3; do
+    if [ -x "$candidate" ]; then
+        python=$candidate
+        export ALONDRA_TEST_PYTHON=$candidate
+        break
+    fi
+done
+
+dir=$(mktemp -d "$root/bt.XXXXXX") || exec "$python" -c "$launcher" "$@"
 echo $$ >"$dir/.owner"
 export TMPDIR="$dir"
 export ALONDRA_SHORT_TMPDIR="$dir"
@@ -345,7 +361,7 @@ trap 'finish 129' HUP
 trap 'finish 130' INT
 trap 'finish 143' TERM
 
-python3 -c "$launcher" "$@" <&0 &
+"$python" -c "$launcher" "$@" <&0 &
 child=$!
 wait "$child"
 status=$?

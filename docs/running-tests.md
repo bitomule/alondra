@@ -86,6 +86,13 @@ too. Test code never falls back to `/tmp`: a fixture that finds no short folder 
 through Bazel. `//tools:test_scratch_guard_test` refuses a fallback to, or a file created in, a shared
 temporary folder in test-side Rust code.
 
+The wrapper starts under the developer directory's own `python3`, never `/usr/bin/python3`: that is an
+Xcode shim which, with no entry in the `xcrun_db` of the test (a new file for every test, see above), runs
+`xcodebuild` to find `python3`. Alone that costs about a second; on a loaded Mac it took most of a
+minute in every test before the test started, and small targets passed their limit as `TIMEOUT`
+with a test body of 0.2 s. `ALONDRA_TEST_PYTHON` names that interpreter for a test that runs a script
+itself; a test that runs `/usr/bin/python3` or another shim pays the lookup once, inside its own time.
+
 ### Executables a test writes
 
 macOS checks a binary it has not seen before (Gatekeeper's first-launch scan) after the process has
