@@ -22,6 +22,11 @@ use alondra_core::codex_account::{ProbeReport, parse_models};
 const OUTPUT_LIMIT: u64 = 2 * 1024 * 1024;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// What a probe reads the time on to decide when Codex is too late: the wall clock, or one a test
+/// moves itself, so a busy Mac never decides a test.
+pub(crate) type Clock = fn() -> Instant;
+const WALL: Clock = Instant::now;
+
 pub fn prepare(home: &Path, key: &AccountKey) -> Result<Option<PathBuf>, String> {
     if key.provider != Provider::Codex { return Err("The account is not a Codex account".into()); }
     let Some(folder) = provider_folder(home, key) else { return Ok(None) };
@@ -56,6 +61,7 @@ pub(crate) struct Probe {
     output: Receiver<Result<Value, String>>,
     reader: Option<std::thread::JoinHandle<()>>,
     until: Instant,
+    clock: Clock,
     sequence: u64,
     fixture_diagnostics: bool,
     notifications: std::collections::VecDeque<Value>,
@@ -73,7 +79,7 @@ impl Drop for Probe {
 }
 
 impl Probe {
-    pub(crate) fn start(mut command: Command, timeout: Duration) -> Result<Self, String> {
+    pub(crate) fn start(mut command: Command, timeout: Duration, clock: Clock) -> Result<Self, String> {
         command.args(["app-server", "--listen", "stdio://"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
         unsafe { command.pre_exec(|| if libc::setpgid(0, 0) == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }); }
         let mut child = command.spawn().map_err(|error| format!("Could not run Codex: {error}"))?;
@@ -98,7 +104,7 @@ impl Probe {
                 }
             }
         });
-        Ok(Self { child, input, output, reader: Some(reader), until: Instant::now() + timeout, sequence: 0, fixture_diagnostics: false, notifications: Default::default(), cancelled: None })
+        Ok(Self { child, input, output, reader: Some(reader), until: clock() + timeout, clock, sequence: 0, fixture_diagnostics: false, notifications: Default::default(), cancelled: None })
     }
 
     pub(crate) fn send(&mut self, value: Value) -> Result<(), String> {
@@ -113,7 +119,7 @@ impl Probe {
         self.send(json!({"id":id,"method":method,"params":params}))?;
         loop {
             self.check_cancelled()?;
-            let left = self.until.checked_duration_since(Instant::now()).ok_or("Codex probe did not answer in time")?;
+            let left = self.until.checked_duration_since((self.clock)()).ok_or("Codex probe did not answer in time")?;
             let wait = if self.cancelled.is_some() { left.min(Duration::from_millis(100)) } else { left };
             let message = match self.output.recv_timeout(wait) {
                 Ok(message) => message?,
@@ -153,6 +159,10 @@ pub fn probe(command: Command, account: AccountKey, now: alondra_foundation::Mil
 
 /// Checks local thread metadata and its retained rollout without opening a conversation or turn.
 pub fn retained_thread(executable: &Path, environment: &BTreeMap<String, String>, thread: &str, directory: &Path) -> Result<bool, String> {
+    retained_thread_on(WALL, executable, environment, thread, directory)
+}
+
+fn retained_thread_on(clock: Clock, executable: &Path, environment: &BTreeMap<String, String>, thread: &str, directory: &Path) -> Result<bool, String> {
     let normal_absolute = |path: &Path| path.is_absolute() && path.components().all(|part| matches!(part, std::path::Component::RootDir | std::path::Component::Normal(_)));
     if thread.is_empty() || thread.len() > 256 || thread.chars().any(char::is_control) || !normal_absolute(executable) || !normal_absolute(directory) {
         return Ok(false);
@@ -161,7 +171,7 @@ pub fn retained_thread(executable: &Path, environment: &BTreeMap<String, String>
     let Some(home) = environment.get("HOME").map(Path::new).filter(|home| normal_absolute(home)) else { return Ok(false) };
     let mut command = Command::new(executable);
     command.env_clear().envs(environment).current_dir(home);
-    let mut process = Probe::start(command, PROBE_TIMEOUT)?;
+    let mut process = Probe::start(command, PROBE_TIMEOUT, clock)?;
     process.rpc("initialize", json!({"clientInfo":{"name":"alondra","title":"Alondra","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}}))?;
     process.send(json!({"method":"initialized"}))?;
     let result = process.rpc("thread/read", json!({"threadId":thread,"includeTurns":false}))?;
@@ -177,16 +187,16 @@ pub fn retained_thread(executable: &Path, environment: &BTreeMap<String, String>
 
 /// Optional quota never prevents cached model metadata; refused identity publishes neither usage nor catalog.
 pub fn probe_matching(command: Command, account: AccountKey, now: alondra_foundation::Millis, accept_account: impl FnOnce(&ProbeReport) -> bool) -> Result<ProbeReport, String> {
-    probe_with_diagnostics(command, account, now, accept_account, false)
+    probe_with_diagnostics(WALL, command, account, now, accept_account, false)
 }
 
 /// Only isolated synthetic-account fixtures expose bounded native RPC errors; never return error data.
 pub fn probe_fixture(command: Command, account: AccountKey, now: alondra_foundation::Millis) -> Result<ProbeReport, String> {
-    probe_with_diagnostics(command, account, now, |_| true, true)
+    probe_with_diagnostics(WALL, command, account, now, |_| true, true)
 }
 
-fn probe_with_diagnostics(command: Command, account: AccountKey, now: alondra_foundation::Millis, accept_account: impl FnOnce(&ProbeReport) -> bool, fixture_diagnostics: bool) -> Result<ProbeReport, String> {
-    let mut process = Probe::start(command, PROBE_TIMEOUT)?;
+fn probe_with_diagnostics(clock: Clock, command: Command, account: AccountKey, now: alondra_foundation::Millis, accept_account: impl FnOnce(&ProbeReport) -> bool, fixture_diagnostics: bool) -> Result<ProbeReport, String> {
+    let mut process = Probe::start(command, PROBE_TIMEOUT, clock)?;
     process.fixture_diagnostics = fixture_diagnostics;
     let initialized = process.rpc("initialize", json!({"clientInfo":{"name":"alondra","title":"Alondra","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}}))?;
     process.send(json!({"method":"initialized"}))?;
