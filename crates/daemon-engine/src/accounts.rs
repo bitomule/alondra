@@ -30,9 +30,7 @@ use alondra_engine_ports::Runtime;
 
 pub use alondra_engine_kernel::accounts_file::{config, profiles, registered, registered_provider, share_sessions};
 
-pub const PATH: &str = "/settings/accounts";
-/// Checks every account's sign-in now, as after the user signs one in.
-pub const CHECK: &str = "/settings/accounts/check";
+pub use alondra_engine_ports::accounts::{CHECK, PATH};
 const CHECK_EVERY: Duration = Duration::from_secs(10 * 60);
 
 /// How Claude Code runs to read or end an account's sign-in: the executable and environment the

@@ -3,13 +3,15 @@
 //! Action IDs deliberately carry the subject revision. The renderer keeps no action table;
 //! every submission is checked against the current domain snapshot and then committed through
 //! the same command path as the resource API.
+#[cfg(test)]
 use alondra_daemon_engine::sdk_backend::SdkOf as _;
 use alondra_engine_ports::gate::GateOf as _;
 
+#[cfg(test)]
 use alondra_daemon_engine::live::LiveOf as _;
-use alondra_daemon_engine::local_actions::LocalActionsOf as _;
+use alondra_engine_ports::local_actions::LocalActionsOf as _;
 use alondra_core::clock;
-use alondra_daemon_engine::local_actions::{LocalActionReceipt, LocalActionResource, LocalResourceGuard};
+use alondra_engine_ports::local_actions::{LocalActionReceipt, LocalActionResource, LocalResourceGuard};
 #[path = "model_input.rs"]
 mod model_input;
 
@@ -521,7 +523,7 @@ async fn execute_external(
             let mark_read = matches!(interaction.payload, InteractionPayload::Information { .. });
             let body = json!({"text":text,"attachments":attachments,"kind":"reply",
                 "mark_read":mark_read,"interaction_id":interaction_id,"task_id":task_id});
-            let reply = crate::domain_bootstrap::send_agent_message(domain, home, device, &agent, body).await;
+            let reply = crate::domain_bootstrap::send_agent_message(&client.api, domain, home, device, &agent, body).await;
             if let Some(unreachable) = unreachable_reply(&state, &agent, &reply, lang) { return Ok(unreachable); }
             let status = reply["status"].as_u64().unwrap_or(500) as u16;
             Ok(to_applied(status, reply["body"].clone()))
@@ -539,12 +541,12 @@ async fn execute_external(
             if text.is_empty() { return Ok(error_value_lang(lang, "invalid_input", "text is required")); }
             let body = json!({"text":text,"attachments":attachments,"kind":"pr_question",
                 "pr_id":pr.id,"task_id":task.id});
-            let reply = crate::domain_bootstrap::send_agent_message(domain, home, device, agent, body).await;
+            let reply = crate::domain_bootstrap::send_agent_message(&client.api, domain, home, device, agent, body).await;
             if let Some(unreachable) = unreachable_reply(&state, agent, &reply, lang) { return Ok(unreachable); }
             Ok(to_applied(reply["status"].as_u64().unwrap_or(500) as u16, reply["body"].clone()))
         }
         Verb::CloseUnmerged => {
-            let looks_elsewhere = |pr: &alondra_domain_model::PullRequest| look_for_by_locator(domain, pr);
+            let looks_elsewhere = |pr: &alondra_domain_model::PullRequest| look_for_by_locator(&client.api, domain, pr);
             let Closing { pr, task_id, was_open, deferred } = match close_on_github(&state, client.github().as_ref(), &action.subject, lang, &looks_elsewhere).await {
                 Ok(closed) => closed,
                 Err(refused) => return Ok(refused),
@@ -553,7 +555,7 @@ async fn execute_external(
             if pr.state == alondra_domain_model::PrState::Open && !deferred {
                 let closed = Command::ObservePrState { pr_id: pr.id.clone(), head: pr.head.clone(), base: pr.base.clone(),
                     state: alondra_domain_model::PrState::Closed, merged_head: None };
-                if let Err(error) = crate::domain_github::execute_system(domain, closed) {
+                if let Err(error) = client.api.runtime.execute_system(domain, closed) {
                     log!("could not record that PR #{number} was closed: {error}");
                 }
             }
@@ -604,7 +606,7 @@ async fn execute_external(
             if text.is_empty() { return Ok(error_value_lang(lang, "invalid_input", "text is required")); }
             let body = json!({"text":text,"attachments":attachments,"kind":"message","task_id":task,
                 "from_claude":flag(&request.input, "from_claude")});
-            let reply = crate::reply::Reply::answer(crate::domain_messages::relayed_to_task(domain, home, device, &task, Some(&body)));
+            let reply = crate::reply::Reply::answer(client.api.messages.relayed_to_task(domain, home, device, &task, Some(&body)));
             Ok(to_applied(reply.status.as_u16(), reply.body))
         }
         Verb::Msg if action.subject == "view" || matches!(state.resolve_target(&action.subject), Target::Orchestrator(_)) => {
@@ -628,12 +630,12 @@ async fn execute_external(
             } else { None };
             let body = json!({"text":text,"attachments":attachments,"kind":"message","task_id":task_id,
                 "from_claude":flag(&request.input, "from_claude")});
-            let reply = crate::domain_bootstrap::send_agent_message(domain, home, device, &agent, body).await;
+            let reply = crate::domain_bootstrap::send_agent_message(&client.api, domain, home, device, &agent, body).await;
             if let Some(unreachable) = unreachable_reply(&state, &agent, &reply, lang) { return Ok(unreachable); }
             Ok(to_applied(reply["status"].as_u64().unwrap_or(500) as u16, reply["body"].clone()))
         }
         Verb::Relaunch => {
-            let launched = crate::domain_orchestrator_tools::relaunch(domain, home, &TaskId(action.subject.clone())).await;
+            let launched = client.api.tools.relaunch(domain, home, &TaskId(action.subject.clone())).await;
             let (status, body) = relaunch_reply(launched);
             Ok(to_applied(status, body))
         }
@@ -660,13 +662,14 @@ async fn execute_external(
                 return match domain.execute(&Actor::User { user_id }, &envelope, transport,
                     || authorize().map_err(|_| DomainError::new("forbidden", "device approval was revoked").into())) {
                     Ok(outcome) => Ok(applied(action.verb, lang, stamp, outcome.revision, 200, json!({"interrupted": action.subject}))),
-                    Err(crate::domain_store::StoreError::Domain(error)) => Ok(domain_refusal_value(&error, lang)),
-                    Err(crate::domain_store::StoreError::Storage(error)) => Err(error),
+                    Err(alondra_engine_ports::journal::StoreError::Domain(error)) => Ok(domain_refusal_value(&error, lang)),
+                    Err(alondra_engine_ports::journal::StoreError::Storage(error)) => Err(error),
                 };
             }
-            match domain.live().pushes.interrupt(&agent.0) {
-                Ok(()) => Ok(to_applied(200, json!({"interrupted": agent.0}))),
-                Err(_) => Ok(node_unreachable_value(&state, &agent, lang)),
+            if client.api.live.interrupt(domain, &agent.0) {
+                Ok(to_applied(200, json!({"interrupted": agent.0})))
+            } else {
+                Ok(node_unreachable_value(&state, &agent, lang))
             }
         }
         Verb::ForceStop => {
@@ -682,8 +685,8 @@ async fn execute_external(
             match domain.execute(&Actor::User { user_id }, &envelope, transport,
                 || authorize().map_err(|_| DomainError::new("forbidden", "device approval was revoked").into())) {
                 Ok(outcome) => Ok(applied(action.verb, lang, stamp, outcome.revision, 200, json!({"force_stopped": action.subject}))),
-                Err(crate::domain_store::StoreError::Domain(error)) => Ok(domain_refusal_value(&error, lang)),
-                Err(crate::domain_store::StoreError::Storage(error)) => Err(error),
+                Err(alondra_engine_ports::journal::StoreError::Domain(error)) => Ok(domain_refusal_value(&error, lang)),
+                Err(alondra_engine_ports::journal::StoreError::Storage(error)) => Err(error),
             }
         }
         Verb::Pause => {
@@ -726,7 +729,7 @@ async fn execute_external(
             let Some(id) = action.subject.strip_prefix("rule-").and_then(|id| id.parse::<i64>().ok()) else {
                 return Ok(no_longer_available(lang, "This permission is no longer listed"));
             };
-            match crate::allow_always::remove_rule(domain, id) {
+            match client.api.runtime.remove_allowed_rule(domain, id) {
                 Ok(Some(rule)) => Ok(to_applied(200, json!({"removed": rule.rule, "repo": rule.repo}))),
                 Ok(None) => Ok(no_longer_available(lang, "This permission is no longer listed")),
                 Err(why) => {
@@ -736,10 +739,10 @@ async fn execute_external(
             }
         }
         Verb::McpSignOut => {
-            let Some(target @ crate::mcp_waits::Target::Server(_)) = crate::mcp_waits::Target::of(&action.subject) else {
+            let Some(target @ alondra_engine_ports::mcp::Target::Server(_)) = alondra_engine_ports::mcp::Target::of(&action.subject) else {
                 return Ok(no_longer_available(lang, "No running task uses this MCP server any more"));
             };
-            match crate::mcp_waits::sign_out(domain, &target) {
+            match client.api.mcp.sign_out(domain, &target) {
                 Ok(server) => Ok(to_applied(200, json!({"signed_out": server}))),
                 Err(error) if error.code == "not_found" => Ok(no_longer_available(lang, "No running task uses this MCP server any more")),
                 Err(error) => Ok(error_value(&error.code, &error.message)),
@@ -751,10 +754,10 @@ async fn execute_external(
             let current = state.model_profiles.get(&provider).and_then(|profiles| profiles.get(&profile));
             let policy = match model_input::profile(&request.input.fields, request.option_id.as_deref(), current, provider) { Ok(policy) => policy, Err(message) => return Ok(rejected_field(lang, "model", message)) };
             let actor = Actor::User { user_id: user_id.clone() };
-            match crate::accounts::set_model_profile_authorized(domain, home, &actor, provider, profile, &policy, expected, &authorize) {
+            match client.api.accounts.set_model_profile(domain, home, &actor, provider, profile, &policy, expected, &authorize, lang) {
                 Ok(()) => Ok(to_applied(200, json!({"model_profile_saved": true}))),
-                Err(crate::accounts::ChangeRefused::Domain(error)) => Ok(domain_refusal_value(&error, lang)),
-                Err(crate::accounts::ChangeRefused::Store(refused)) => Ok(error_value("conflict", &refused.message(lang))),
+                Err(alondra_engine_ports::domain_api::AccountRefusal::Domain(error)) => Ok(domain_refusal_value(&error, lang)),
+                Err(alondra_engine_ports::domain_api::AccountRefusal::Conflict(message)) => Ok(error_value("conflict", &message)),
             }
         }
         Verb::SpecEdit => crate::views::spec_actions::execute(domain, &state, action, request, &user_id, lang, &authorize),
@@ -770,7 +773,7 @@ async fn execute_external(
                 intent
             });
             let intent = match model_input::task(&request.input.fields, base, &task.account_key()) { Ok(value) => value, Err(message) => return Ok(rejected_field(lang, "model", message)) };
-            let chosen = match crate::accounts::select_for_active_model(domain, &task_id, &intent) { Ok(chosen) => chosen, Err(error) => return Ok(error_value(&error.code, &error.message)) };
+            let chosen = match client.api.accounts.select_for_active_model(domain, &task_id, &intent) { Ok(chosen) => chosen, Err(error) => return Ok(error_value(&error.code, &error.message)) };
             let actor = Actor::User { user_id: user_id.clone() };
             match client.api.sdk.change_provider(domain, &actor, &task_id, chosen.account, chosen.selection, intent, "User changed model selection", expected,
                 Box::new(|| authorize().map_err(|_| DomainError::new("forbidden", "device approval was revoked")))) {
@@ -796,8 +799,8 @@ async fn execute_external(
             let Some(provider) = alondra_view_model::accounts::action_provider(action) else { return Ok(rejected_field(lang, "provider", "Choose an available provider")); };
             let Ok(account) = alondra_core::accounts::AccountId::parse(&action.subject) else { return Ok(rejected_field(lang, "account", "Choose an account")); };
             let key = alondra_core::accounts::AccountKey { provider, account };
-            let (runtime, home) = (client.domain.clone(), home.to_path_buf());
-            match alondra_core::clock::spawn_blocking(move || crate::accounts::refresh_models(&*runtime, &home, &key)).await? {
+            let (runtime, api, home) = (client.domain.clone(), client.api.clone(), home.to_path_buf());
+            match alondra_core::clock::spawn_blocking(move || api.accounts.refresh_models(&*runtime, &home, &key)).await? {
                 Ok(()) => Ok(to_applied(200, json!({"models_refreshed": true}))),
                 Err(message) => Ok(error_value("unavailable", &message)),
             }
@@ -807,7 +810,7 @@ async fn execute_external(
                 return Ok(rejected_field(lang, "provider", "Choose an available provider"));
             };
             let actor = Actor::User { user_id: user_id.clone() };
-            let made = if action.verb == Verb::ProviderConnect { crate::accounts::connect(domain, home, &actor, provider, &authorize) } else {
+            let made = if action.verb == Verb::ProviderConnect { client.api.accounts.connect(domain, home, &actor, provider, &authorize, lang) } else {
                 let Some(name) = request.input.text.as_deref().map(str::trim).filter(|name| !name.is_empty()) else {
                     return Ok(rejected_field(lang, "text", "This option needs text"));
                 };
@@ -821,12 +824,12 @@ async fn execute_external(
                     }
                     _ => None,
                 };
-                crate::accounts::change_for_provider_authorized(domain, home, &actor, provider, &alondra_core::accounts::AccountChange::Add { antigravity, name: name.into() }, &authorize)
+                client.api.accounts.change(domain, home, &actor, provider, &alondra_core::accounts::AccountChange::Add { antigravity, name: name.into() }, &authorize, lang)
             };
             match made {
                 Ok(()) => Ok(to_applied(200, json!({"accounts": action.subject}))),
-                Err(crate::accounts::ChangeRefused::Domain(error)) => Ok(domain_refusal_value(&error, lang)),
-                Err(crate::accounts::ChangeRefused::Store(refused)) => Ok(error_value("conflict", &refused.message(lang))),
+                Err(alondra_engine_ports::domain_api::AccountRefusal::Domain(error)) => Ok(domain_refusal_value(&error, lang)),
+                Err(alondra_engine_ports::domain_api::AccountRefusal::Conflict(message)) => Ok(error_value("conflict", &message)),
             }
         }
         Verb::AccountCredential => {
@@ -847,19 +850,19 @@ async fn execute_external(
             let cleared = secret.is_none();
             let actor = Actor::User { user_id: user_id.clone() };
             let key = alondra_core::accounts::AccountKey { provider, account };
-            match crate::accounts::set_credential_authorized(domain, home, &actor, &key, secret, &authorize) {
+            match client.api.accounts.set_credential(domain, home, &actor, &key, secret, &authorize, lang) {
                 Ok(()) => {
-                    let (runtime, home) = (client.domain.clone(), home.to_path_buf());
-                    alondra_core::clock::spawn_blocking(move || crate::accounts::check(&*runtime, &home)).await?;
+                    let (runtime, api, home) = (client.domain.clone(), client.api.clone(), home.to_path_buf());
+                    alondra_core::clock::spawn_blocking(move || api.accounts.check(&*runtime, &home)).await?;
                     Ok(to_applied(200, json!({"credential": if cleared { "cleared" } else { "set" }})))
                 }
-                Err(crate::accounts::ChangeRefused::Domain(error)) => Ok(domain_refusal_value(&error, lang)),
-                Err(crate::accounts::ChangeRefused::Store(refused)) => Ok(error_value("conflict", &refused.message(lang))),
+                Err(alondra_engine_ports::domain_api::AccountRefusal::Domain(error)) => Ok(domain_refusal_value(&error, lang)),
+                Err(alondra_engine_ports::domain_api::AccountRefusal::Conflict(message)) => Ok(error_value("conflict", &message)),
             }
         }
         Verb::AccountCheck => {
-            let (runtime, home) = (client.domain.clone(), home.to_path_buf());
-            alondra_core::clock::spawn_blocking(move || crate::accounts::check_now(&*runtime, &home)).await?;
+            let (runtime, api, home) = (client.domain.clone(), client.api.clone(), home.to_path_buf());
+            alondra_core::clock::spawn_blocking(move || api.accounts.check_now(&*runtime, &home)).await?;
             Ok(to_applied(200, json!({"accounts_checked": true})))
         }
         Verb::AccountOrder => {
@@ -871,11 +874,11 @@ async fn execute_external(
                 return Ok(rejected_field(lang, "expected_config_version", "Reload the account order and try again"));
             };
             let actor = Actor::User { user_id: user_id.clone() };
-            let made = crate::accounts::set_order_authorized(domain, home, &actor, &order, expected, &authorize);
+            let made = client.api.accounts.set_order(domain, home, &actor, &order, expected, &authorize, lang);
             match made {
                 Ok(()) => Ok(to_applied(200, json!({"account_order_saved": true}))),
-                Err(crate::accounts::ChangeRefused::Domain(error)) => Ok(domain_refusal_value(&error, lang)),
-                Err(crate::accounts::ChangeRefused::Store(refused)) => Ok(error_value("conflict", &refused.message(lang))),
+                Err(alondra_engine_ports::domain_api::AccountRefusal::Domain(error)) => Ok(domain_refusal_value(&error, lang)),
+                Err(alondra_engine_ports::domain_api::AccountRefusal::Conflict(message)) => Ok(error_value("conflict", &message)),
             }
         }
         Verb::AccountEnable | Verb::AccountDisable | Verb::AccountRemove | Verb::AccountUp | Verb::AccountDown
@@ -887,11 +890,11 @@ async fn execute_external(
                 return Ok(rejected_field(lang, "option_id", "Choose an option"));
             };
             let actor = Actor::User { user_id: user_id.clone() };
-            let made = crate::accounts::change_for_provider_authorized(domain, home, &actor, provider, &change, &authorize);
+            let made = client.api.accounts.change(domain, home, &actor, provider, &change, &authorize, lang);
             match made {
                 Ok(()) => Ok(to_applied(200, json!({"accounts": action.subject}))),
-                Err(crate::accounts::ChangeRefused::Domain(error)) => Ok(domain_refusal_value(&error, lang)),
-                Err(crate::accounts::ChangeRefused::Store(refused)) => Ok(error_value("conflict", &refused.message(lang))),
+                Err(alondra_engine_ports::domain_api::AccountRefusal::Domain(error)) => Ok(domain_refusal_value(&error, lang)),
+                Err(alondra_engine_ports::domain_api::AccountRefusal::Conflict(message)) => Ok(error_value("conflict", &message)),
             }
         }
         Verb::McpCheck => {
@@ -899,18 +902,15 @@ async fn execute_external(
             let Some(project) = projects.into_iter().find(|entry| alondra_view_model::mcp::project_target(&entry.name) == action.subject) else {
                 return Ok(no_longer_available(lang, "This project is no longer listed"));
             };
-            let Some((backend, _)) = domain.sdk() else {
+            if !client.api.runtime.sdk_enabled(domain) || alondra_engine_ports::agent_host::of(domain.ports()).is_err() {
                 return Ok(error_value_lang(lang, "conflict", "This Alondra has no Agent SDK host to check with"));
-            };
-            let Ok(hosts) = alondra_engine_ports::agent_host::of(domain.ports()) else {
-                return Ok(error_value_lang(lang, "conflict", "This Alondra has no Agent SDK host to check with"));
-            };
+            }
             let shared = std::sync::Arc::downgrade(&client.shared());
             let woken = move || if let Some(client) = shared.upgrade() {
                 client.feeds.wake();
                 client.view_observation.add(super::observation::Metric::WakeMcpFinished, 1);
             };
-            let started = crate::mcp_probe::check(client.mcp_probes.clone(), hosts, backend.clone(), project.name.clone(), project.path, woken);
+            let started = client.api.mcp.check(domain, client.mcp_probes.clone(), project.name.clone(), project.path, Box::new(woken));
             if started {
                 client.feeds.wake();
                 client.view_observation.add(super::observation::Metric::WakeMcpStarted, 1);
@@ -919,21 +919,19 @@ async fn execute_external(
         }
         Verb::McpRemove => {
             let (_, projects, _) = client.project_list();
-            let Some((backend, _)) = domain.sdk() else {
+            if !client.api.runtime.sdk_enabled(domain) || alondra_engine_ports::agent_host::of(domain.ports()).is_err() {
                 return Ok(error_value_lang(lang, "conflict", "This Alondra has no Agent SDK host to reach Claude Code with"));
-            };
-            let Ok(hosts) = alondra_engine_ports::agent_host::of(domain.ports()) else {
-                return Ok(error_value_lang(lang, "conflict", "This Alondra has no Agent SDK host to reach Claude Code with"));
-            };
-            let (nodes, probes, backend, subject) = (state.mcp_nodes(), client.mcp_probes.clone(), backend.clone(), action.subject.clone());
-            let removed = alondra_core::clock::spawn_blocking_unwatched(move || crate::mcp_remove::remove(&nodes, &probes, &projects, &*hosts, &backend, &subject)).await?;
+            }
+            let (nodes, probes, subject) = (state.mcp_nodes(), client.mcp_probes.clone(), action.subject.clone());
+            let (runtime, api) = (client.domain.clone(), client.api.clone());
+            let removed = alondra_core::clock::spawn_blocking_unwatched(move || api.mcp.remove(&*runtime, &nodes, &probes, &projects, &subject)).await?;
             match removed {
                 Ok(server) => {
                     client.feeds.wake();
                     client.view_observation.add(super::observation::Metric::WakeMcpRemoved, 1);
                     Ok(to_applied(200, json!({"removed": server})))
                 }
-                Err((name, refused @ crate::mcp_remove::Refused::Gone)) => Ok(no_longer_available(lang, &refused.message(name.as_deref().unwrap_or_default(), lang))),
+                Err((name, refused @ alondra_engine_ports::mcp::Refused::Gone)) => Ok(no_longer_available(lang, &refused.message(name.as_deref().unwrap_or_default(), lang))),
                 Err((name, refused)) => Ok(error_value("conflict", &refused.message(name.as_deref().unwrap_or("this MCP server"), lang))),
             }
         }
@@ -1272,10 +1270,10 @@ fn execute_value(
     let outcome = match domain.execute(&actor, &envelope, transport,
         || authorize().map_err(|_| DomainError::new("forbidden", "device approval was revoked").into())) {
         Ok(outcome) => outcome,
-        Err(crate::domain_store::StoreError::Domain(error)) => {
+        Err(alondra_engine_ports::journal::StoreError::Domain(error)) => {
             return Ok(domain_refusal_value(&error, lang));
         }
-        Err(crate::domain_store::StoreError::Storage(error)) => return Err(error.into()),
+        Err(alondra_engine_ports::journal::StoreError::Storage(error)) => return Err(error.into()),
     };
     let response = json!({"protocol":VIEWS_PROTOCOL,"outcome":"applied","stamp":stamp,"revision":outcome.revision});
     Ok(response)
@@ -1381,10 +1379,10 @@ struct Closing {
 }
 
 /// Asks the engine to find `pr` again by its locator: its address answered with another pull request.
-fn look_for_by_locator(domain: &dyn alondra_engine_ports::Runtime, pr: &alondra_domain_model::PullRequest) {
+fn look_for_by_locator(api: &alondra_engine_ports::domain_api::DomainApi, domain: &dyn alondra_engine_ports::Runtime, pr: &alondra_domain_model::PullRequest) {
     let command = Command::ObservePrAddress { pr_id: pr.id.clone(), read: alondra_domain_model::PrRead::Address { repository: pr.repository.clone() },
-        read_started_at: crate::pr_identity::read_start(), verdict: alondra_domain_model::PrAddressVerdict::NamesAnotherPr };
-    if let Err(error) = crate::domain_github::execute_system(domain, command) {
+        read_started_at: alondra_engine_ports::github::read_start(), verdict: alondra_domain_model::PrAddressVerdict::NamesAnotherPr };
+    if let Err(error) = api.runtime.execute_system(domain, command) {
         log!("could not ask for {}#{} by its locator: {error}", pr.repository, pr.number);
     }
 }
@@ -1423,7 +1421,7 @@ async fn close_on_github(state: &alondra_domain_model::DomainState, github: &dyn
         && let Err(detail) = github.close_pr(&pr.host, &pr.repository, number, expected, &alondra_domain_model::cancelled_pr_comment(&task.title)).await
     {
         log!("could not close PR #{number} on GitHub: {detail}");
-        if matches!(detail, crate::domain_github::GhFailure::IdentityMismatch(_)) {
+        if matches!(detail, alondra_engine_ports::github::GhFailure::IdentityMismatch(_)) {
             looks_elsewhere(pr);
             return Err(refused_value(&Refusal::PrNotCheckedYet, lang));
         }
@@ -1609,7 +1607,7 @@ fn map_action(
                 if text.is_empty() { return None; }
                 (text.to_owned(), attachments.to_vec(), Instruction::Question, stamp("Question sent", "Pregunta enviada"))
             } else {
-                (crate::domain_messages::conflicts_text(&crate::domain_messages::user_name(), pr, state.branch_update), vec![],
+                (alondra_engine_ports::outbox::conflicts_text(&alondra_core::config::user_name(), pr, state.branch_update), vec![],
                     Instruction::Conflicts, stamp("Conflicts requested", "Conflictos comunicados"))
             };
             Some((Command::SubmitFeedback { presentation_id: presentation.id.clone(),
@@ -2363,7 +2361,7 @@ mod tests {
     }
 
     fn semantic_receipt_count(home: &std::path::Path) -> i64 {
-        let database = crate::domain_store::active_path(home);
+        let database = alondra_engine_ports::journal::active_path(home);
         let connection = rusqlite::Connection::open(database).unwrap();
         connection.query_row("SELECT count(*) FROM semantic_receipts", [], |row| row.get(0)).unwrap()
     }
@@ -3346,8 +3344,8 @@ for line in sys.stdin:
         listed: std::sync::atomic::AtomicBool,
         release: tokio::sync::Semaphore,
     }
-    impl crate::node_close::Sessions for HeldClose {
-        fn claude<'a>(&'a self, args: Vec<String>) -> crate::node_close::Answer<'a, Result<crate::node_close::Ran, String>> {
+    impl alondra_engine_ports::node_close::Sessions for HeldClose {
+        fn claude<'a>(&'a self, args: Vec<String>) -> alondra_engine_ports::node_close::Answer<'a, Result<crate::node_close::Ran, String>> {
             Box::pin(async move {
                 use std::sync::atomic::Ordering;
                 match args[0].as_str() {
@@ -3362,7 +3360,7 @@ for line in sys.stdin:
                 }
             })
         }
-        fn leftovers<'a>(&'a self, _: &'a str) -> crate::node_close::Answer<'a, Option<String>> {
+        fn leftovers<'a>(&'a self, _: &'a str) -> alondra_engine_ports::node_close::Answer<'a, Option<String>> {
             Box::pin(async { None })
         }
     }
@@ -3509,16 +3507,16 @@ for line in sys.stdin:
         release: tokio::sync::Semaphore,
     }
     impl crate::client_routes::Github for HeldPrClose {
-        fn search_issues<'a>(&'a self, _: &'a [String]) -> crate::node_close::Answer<'a, Result<Value, String>> { Box::pin(async { Err("not used".into()) }) }
-        fn issue_view<'a>(&'a self, _: &'a str, _: u64) -> crate::node_close::Answer<'a, Result<Value, String>> { Box::pin(async { Err("not used".into()) }) }
-        fn close_pr<'a>(&'a self, _: &'a str, _: &'a str, _: u64, _: &'a alondra_domain_model::ProviderPrKey, _: &'a str) -> crate::node_close::Answer<'a, Result<(), crate::domain_github::GhFailure>> {
+        fn search_issues<'a>(&'a self, _: &'a [String]) -> alondra_engine_ports::node_close::Answer<'a, Result<Value, String>> { Box::pin(async { Err("not used".into()) }) }
+        fn issue_view<'a>(&'a self, _: &'a str, _: u64) -> alondra_engine_ports::node_close::Answer<'a, Result<Value, String>> { Box::pin(async { Err("not used".into()) }) }
+        fn close_pr<'a>(&'a self, _: &'a str, _: &'a str, _: u64, _: &'a alondra_domain_model::ProviderPrKey, _: &'a str) -> alondra_engine_ports::node_close::Answer<'a, Result<(), alondra_engine_ports::github::GhFailure>> {
             Box::pin(async move {
                 self.calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 self.release.acquire().await.unwrap().forget();
                 Ok(())
             })
         }
-        fn pr_state<'a>(&'a self, _: &'a str, _: &'a str, _: u64) -> crate::node_close::Answer<'a, Result<alondra_domain_model::PrState, String>> {
+        fn pr_state<'a>(&'a self, _: &'a str, _: &'a str, _: u64) -> alondra_engine_ports::node_close::Answer<'a, Result<alondra_domain_model::PrState, String>> {
             Box::pin(async { Err("not used".into()) })
         }
     }
@@ -3839,13 +3837,13 @@ for line in sys.stdin:
     /// Closes PRs with their comment, or fails with the error in `.1`; `.3` is the state GitHub then reports, `None` when it does not answer.
     struct ClosesPrs(std::sync::Mutex<Vec<(u64, String)>>, Option<&'static str>, Option<Box<dyn Fn() + Send + Sync>>, Option<alondra_domain_model::PrState>);
     impl crate::client_routes::Github for ClosesPrs {
-        fn search_issues<'a>(&'a self, _: &'a [String]) -> crate::node_close::Answer<'a, Result<Value, String>> {
+        fn search_issues<'a>(&'a self, _: &'a [String]) -> alondra_engine_ports::node_close::Answer<'a, Result<Value, String>> {
             Box::pin(async { Err("not used".into()) })
         }
-        fn issue_view<'a>(&'a self, _: &'a str, _: u64) -> crate::node_close::Answer<'a, Result<Value, String>> {
+        fn issue_view<'a>(&'a self, _: &'a str, _: u64) -> alondra_engine_ports::node_close::Answer<'a, Result<Value, String>> {
             Box::pin(async { Err("not used".into()) })
         }
-        fn close_pr<'a>(&'a self, _: &'a str, _: &'a str, number: u64, _: &'a alondra_domain_model::ProviderPrKey, comment: &'a str) -> crate::node_close::Answer<'a, Result<(), crate::domain_github::GhFailure>> {
+        fn close_pr<'a>(&'a self, _: &'a str, _: &'a str, number: u64, _: &'a alondra_domain_model::ProviderPrKey, comment: &'a str) -> alondra_engine_ports::node_close::Answer<'a, Result<(), alondra_engine_ports::github::GhFailure>> {
             Box::pin(async move {
                 if let Some(error) = self.1 { return Err(error.into()); }
                 if let Some(during) = &self.2 { during(); }
@@ -3853,7 +3851,7 @@ for line in sys.stdin:
                 Ok(())
             })
         }
-        fn pr_state<'a>(&'a self, _: &'a str, _: &'a str, _: u64) -> crate::node_close::Answer<'a, Result<alondra_domain_model::PrState, String>> {
+        fn pr_state<'a>(&'a self, _: &'a str, _: &'a str, _: u64) -> alondra_engine_ports::node_close::Answer<'a, Result<alondra_domain_model::PrState, String>> {
             Box::pin(async move { self.3.ok_or_else(|| "GitHub did not answer".to_owned()) })
         }
     }
@@ -4176,14 +4174,14 @@ for line in sys.stdin:
     /// GitHub as a close from a card finds it: the address now answers with another pull request.
     struct AnotherPrThere(std::sync::Mutex<Vec<u64>>);
     impl crate::client_routes::Github for AnotherPrThere {
-        fn search_issues<'a>(&'a self, _: &'a [String]) -> crate::node_close::Answer<'a, Result<Value, String>> { Box::pin(async { Err("not used".into()) }) }
-        fn issue_view<'a>(&'a self, _: &'a str, _: u64) -> crate::node_close::Answer<'a, Result<Value, String>> { Box::pin(async { Err("not used".into()) }) }
+        fn search_issues<'a>(&'a self, _: &'a [String]) -> alondra_engine_ports::node_close::Answer<'a, Result<Value, String>> { Box::pin(async { Err("not used".into()) }) }
+        fn issue_view<'a>(&'a self, _: &'a str, _: u64) -> alondra_engine_ports::node_close::Answer<'a, Result<Value, String>> { Box::pin(async { Err("not used".into()) }) }
         fn close_pr<'a>(&'a self, _: &'a str, _: &'a str, number: u64, _: &'a alondra_domain_model::ProviderPrKey, _: &'a str)
-            -> crate::node_close::Answer<'a, Result<(), crate::domain_github::GhFailure>> {
+            -> alondra_engine_ports::node_close::Answer<'a, Result<(), alondra_engine_ports::github::GhFailure>> {
             self.0.lock().unwrap().push(number);
-            Box::pin(async { Err(crate::domain_github::GhFailure::IdentityMismatch("another pull request".into())) })
+            Box::pin(async { Err(alondra_engine_ports::github::GhFailure::IdentityMismatch("another pull request".into())) })
         }
-        fn pr_state<'a>(&'a self, _: &'a str, _: &'a str, _: u64) -> crate::node_close::Answer<'a, Result<alondra_domain_model::PrState, String>> {
+        fn pr_state<'a>(&'a self, _: &'a str, _: &'a str, _: u64) -> alondra_engine_ports::node_close::Answer<'a, Result<alondra_domain_model::PrState, String>> {
             Box::pin(async { Ok(alondra_domain_model::PrState::Open) })
         }
     }

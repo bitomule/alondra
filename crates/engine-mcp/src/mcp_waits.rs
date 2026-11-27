@@ -10,7 +10,7 @@ use alondra_core::clock;
 use crate::domain_runtime::DomainRuntime;
 use crate::locks::Poisonable as _;
 use alondra_domain_model::{
-    Actor, Command, CommandEnvelope, DomainError, DomainState, InteractionId, MCP_SERVER_PREFIX, McpServerKey, McpServerState,
+    Actor, Command, CommandEnvelope, DomainError, DomainState, McpServerKey, McpServerState,
     McpStatus, Millis, OpenSignIn, PROTOCOL_VERSION, TaskId,
 };
 use std::collections::{BTreeSet, HashMap};
@@ -25,17 +25,6 @@ const LISTENER: Duration = Duration::from_secs(2);
 /// old one, so another follows once it is over.
 pub const SIGN_IN_CACHE: Millis = 30_000;
 const RECONNECTS: u32 = 3;
-
-/// What Connect hands the user.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Opened {
-    /// The user signs in at `url`; with a `port` the browser then comes back to
-    /// `http://localhost:<port>/callback`, Claude's listener on the Mac, and on another device the
-    /// client listens on that port of its own or the user pastes where it came back to.
-    Browser { server: String, url: String, port: Option<u16> },
-    /// Claude's stored sign-in works: nothing to do in a browser.
-    Connected { server: String },
-}
 
 fn envelope(state: &DomainState, command: Command) -> CommandEnvelope {
     CommandEnvelope {
@@ -74,21 +63,7 @@ fn allowed(state: &DomainState, command: Command) -> bool {
     state.guard(&Actor::System, &envelope(state, command)).is_ok()
 }
 
-/// What Connect, Reconnect and Sign out act on: the card the tasks that wait for a server wait
-/// on, or a server the MCP servers screen names by its target.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Target {
-    Card(InteractionId),
-    Server(String),
-}
-
-impl Target {
-    /// A server key names a server; anything else names a card, which must be one of Alondra's
-    /// MCP waits for anything to act on it.
-    pub fn of(id: &str) -> Option<Self> {
-        Some(if id.starts_with(MCP_SERVER_PREFIX) { Self::Server(id.to_owned()) } else { Self::Card(InteractionId::from(id)) })
-    }
-}
+pub use alondra_engine_ports::mcp::{Opened, Target};
 
 /// The server a target names and the open tasks whose nodes act for it, oldest first: for a
 /// card, the tasks that still wait for it; for a server, every open task whose node reports it.

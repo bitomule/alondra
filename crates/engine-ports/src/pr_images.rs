@@ -4,14 +4,14 @@
 //! copies from the daemon, through the same channel as any attachment. Nothing is sent anywhere.
 use alondra_core::markdown::images::{self as markdown, IMAGE_MAX_BYTES};
 use alondra_view_model::pr_images::{ImageProblem, PrImage, Shown};
-use alondra_engine_ports::github::{SIGNED_IMAGE_HOST, encoded_path};
+use crate::github::{SIGNED_IMAGE_HOST, encoded_path};
 use std::collections::BTreeMap;
 use std::path::Path;
 
 /// More images than this in one description are not brought.
 pub const MOST: usize = 30;
 
-pub use alondra_engine_ports::github::{Failure, Fetch, GitHubImages};
+pub use crate::github::{Failure, Fetch, GitHubImages};
 
 /// The pull request whose description is read.
 pub struct Target<'a> {
@@ -201,7 +201,7 @@ fn keep(home: &Path, bytes: &[u8]) -> Result<String, ImageProblem> {
     }
     let extension = markdown::image_extension(bytes).ok_or(ImageProblem::NotAnImage)?;
     markdown::keep(home, bytes, extension).map_err(|error| {
-        log!("could not keep an image of a pull request description: {error}");
+        alondra_foundation::log!("could not keep an image of a pull request description: {error}");
         ImageProblem::Retrying
     })
 }

@@ -98,6 +98,12 @@ pub fn wire(registry: &Registry) {
     registry.provide::<dyn AdmissionEngine>(Arc::new(Engine));
     registry.provide::<dyn SdkEngine>(Arc::new(Engine));
     registry.provide::<dyn alondra_engine_ports::domain_api::RuntimeApi>(Arc::new(crate::runtime_api::Api));
+    registry.provide::<dyn alondra_engine_ports::domain_api::LiveApi>(Arc::new(crate::server_api::Api));
+    registry.provide::<dyn alondra_engine_ports::domain_api::AccountsApi>(Arc::new(crate::server_api::Api));
+    registry.provide::<dyn alondra_engine_ports::domain_api::MessagesApi>(Arc::new(crate::server_api::Api));
+    registry.provide::<dyn alondra_engine_ports::domain_api::ToolsApi>(Arc::new(crate::server_api::Api));
+    registry.provide::<dyn alondra_engine_ports::domain_api::PullRequestsApi>(Arc::new(crate::server_api::Api));
+    registry.provide::<dyn alondra_engine_ports::domain_api::McpApi>(Arc::new(crate::server_api::Api));
     registry.provide::<dyn alondra_provider_contract::SessionWorktrees>(Arc::new(alondra_provider_contract::EveryProvider(vec![
         Arc::new(alondra_provider_claude::SubagentNotes { claude_home: crate::watcher::claude_home }),
         Arc::new(alondra_provider_codex::NoSessionWorktrees),

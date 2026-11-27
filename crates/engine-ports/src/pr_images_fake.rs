@@ -1,5 +1,5 @@
 //! GitHub as a test sets it, for the images of a description.
-use alondra_daemon_support::locks::Poisonable as _;
+use alondra_foundation::locks::Poisonable as _;
 use super::*;
 use std::collections::BTreeSet;
 use std::sync::Mutex;

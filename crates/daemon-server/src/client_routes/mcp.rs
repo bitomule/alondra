@@ -4,7 +4,7 @@
 //! relay's end-to-end envelope, like every write. Where the browser came back to carries a
 //! one-time code: it is handed to Claude in memory and never kept, logged or echoed back.
 use super::{Client, Reply};
-use crate::mcp_waits::Opened;
+use alondra_engine_ports::mcp::Opened;
 use alondra_domain_model::{Actor, Command, CommandEnvelope, DomainError, InteractionId, MCP_GO_ON_WITHOUT, PROTOCOL_VERSION};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -52,12 +52,12 @@ impl Client {
         body: &Value,
         authorize: &(dyn Fn() -> anyhow::Result<()> + Sync),
     ) -> anyhow::Result<Reply> {
-        let Some(target) = crate::mcp_waits::Target::of(card) else { return Ok(invalid()) };
+        let Some(target) = alondra_engine_ports::mcp::Target::of(card) else { return Ok(invalid()) };
         let card = InteractionId::from(card);
         if step == Step::Return {
             let Ok(back) = serde_json::from_value::<Return>(body.clone()) else { return Ok(invalid()) };
             authorize()?;
-            return Ok(match crate::mcp_waits::give_back(self.domain.clone(), &target, back.address).await {
+            return Ok(match self.api.mcp.give_back(self.domain.clone(), &target, back.address).await {
                 Ok(()) => Reply::ok(json!({"ok": true})),
                 Err(error) => Reply::error(error),
             });
@@ -67,14 +67,14 @@ impl Client {
         }
         authorize()?;
         Ok(match step {
-            Step::Connect => match crate::mcp_waits::connect(&*self.domain, &target).await {
+            Step::Connect => match self.api.mcp.connect(&*self.domain, &target).await {
                 Ok(Opened::Browser { server, url, port }) => {
                     Reply::ok(json!({"server": server, "url": url, "returns_to_claude": port.is_some(), "port": port}))
                 }
                 Ok(Opened::Connected { server }) => Reply::ok(json!({"server": server, "connected": true})),
                 Err(error) => Reply::error(error),
             },
-            Step::Reconnect => match crate::mcp_waits::reconnect(&*self.domain, &target) {
+            Step::Reconnect => match self.api.mcp.reconnect(&*self.domain, &target) {
                 Ok(reconnecting) => Reply::ok(json!({"reconnecting": reconnecting})),
                 Err(error) => Reply::error(error),
             },
@@ -102,8 +102,8 @@ impl Client {
         });
         match outcome {
             Ok(_) => Ok(Reply::ok(json!({"ok": true}))),
-            Err(crate::domain_store::StoreError::Domain(error)) => Ok(Reply::error(error)),
-            Err(crate::domain_store::StoreError::Storage(error)) => Err(error),
+            Err(alondra_engine_ports::journal::StoreError::Domain(error)) => Ok(Reply::error(error)),
+            Err(alondra_engine_ports::journal::StoreError::Storage(error)) => Err(error),
         }
     }
 }

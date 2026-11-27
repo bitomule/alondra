@@ -108,7 +108,7 @@ fn failing_checks(state: &DomainState, item: &Due) -> FailingChecks {
 
 /// A final delivery whose PR GitHub confirms is still a draft cannot be merged, so it is refused;
 /// when GitHub does not answer, the delivery is accepted and the merger marks the PR ready itself.
-pub async fn draft_refusal(state: &DomainState, targets: &[DeliveryTarget], github: &impl PrMerger) -> Option<DomainError> {
+pub async fn draft_refusal(state: &DomainState, targets: &[DeliveryTarget], github: &(impl PrMerger + ?Sized)) -> Option<DomainError> {
     for target in targets {
         let DeliveryTarget::PullRequest { pr_id, .. } = target else { continue };
         let Some(pr) = state.pull_requests.get(pr_id) else { continue };

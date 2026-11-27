@@ -269,7 +269,7 @@ async fn only_this_macs_terminal_changes_config_keys() {
 #[tokio::test]
 async fn this_mac_reads_and_changes_the_accounts_and_a_web_page_may_not() {
     let fixture = Fixture::start_with_accounts(Some(alondra_core::accounts::AccountsConfig::default())).await;
-    let (status, body) = unsigned(&fixture, reqwest::Method::GET, crate::accounts::PATH, None, false).await;
+    let (status, body) = unsigned(&fixture, reqwest::Method::GET, alondra_engine_ports::accounts::PATH, None, false).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["accounts"].as_array().unwrap().len(), 1, "{body}");
     assert_eq!((&body["accounts"][0]["id"], &body["accounts"][0]["default"]), (&json!("default"), &json!(true)));
@@ -278,11 +278,11 @@ async fn this_mac_reads_and_changes_the_accounts_and_a_web_page_may_not() {
         "moving a node off its account's limit is off, and says its risk");
     let version = body["version"].clone();
     let chain = json!({"distribution": {"policy": "chain", "reserve": 0.9, "move_when_exhausted": true}, "claude": []});
-    let (status, body) = unsigned(&fixture, reqwest::Method::PUT, crate::accounts::PATH, Some(json!({"version": "0", "accounts": chain})), false).await;
+    let (status, body) = unsigned(&fixture, reqwest::Method::PUT, alondra_engine_ports::accounts::PATH, Some(json!({"version": "0", "accounts": chain})), false).await;
     assert_eq!((status, body["error"].as_str()), (StatusCode::CONFLICT, Some("stale")), "{body}");
-    let (status, _) = unsigned(&fixture, reqwest::Method::PUT, crate::accounts::PATH, Some(json!({"version": version, "accounts": chain})), true).await;
+    let (status, _) = unsigned(&fixture, reqwest::Method::PUT, alondra_engine_ports::accounts::PATH, Some(json!({"version": version, "accounts": chain})), true).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
-    let (status, body) = unsigned(&fixture, reqwest::Method::PUT, crate::accounts::PATH, Some(json!({"version": version, "accounts": chain})), false).await;
+    let (status, body) = unsigned(&fixture, reqwest::Method::PUT, alondra_engine_ports::accounts::PATH, Some(json!({"version": version, "accounts": chain})), false).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["config"]["distribution"]["policy"], "chain");
     assert_eq!(body["move_when_exhausted"]["on"], true, "{body}");
@@ -290,7 +290,7 @@ async fn this_mac_reads_and_changes_the_accounts_and_a_web_page_may_not() {
     let options = std::fs::read_to_string(alondra_core::options::path_in(&fixture.home)).unwrap();
     assert!(options.contains("[accounts.distribution]\npolicy = \"chain\""), "{options}");
     assert!(options.contains("move_when_exhausted = true"), "{options}");
-    let (status, body) = unsigned(&fixture, reqwest::Method::POST, crate::accounts::CHECK, None, false).await;
+    let (status, body) = unsigned(&fixture, reqwest::Method::POST, alondra_engine_ports::accounts::CHECK, None, false).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["accounts"][0]["state"], "unavailable", "without Claude Code no sign-in can be checked: {body}");
 }

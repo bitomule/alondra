@@ -63,7 +63,7 @@ fn a_new_task_belongs_to_the_project_its_request_asked_for_or_else_to_the_folder
         "the folder under the projects root, whatever the orchestrator said");
     assert_eq!(stamped(create(&[], Some(plan(&w, json!({"cwd": "/"}))))), None, "a folder outside the projects root has none");
     let state = w.domain.state().unwrap();
-    let choices = crate::domain_store::RequestLaunch {
+    let choices = alondra_engine_ports::journal::RequestLaunch {
         project: Some("Quill".into()), options: alondra_core::options::OptionsFile::default().orchestrator_defaults(Some("Quill"), None),
         issue: None, issue_text: None, attachments: vec![],
     };
@@ -132,7 +132,7 @@ fn preparing_reopening_uses_the_retained_project_defaults_without_the_directory_
     std::fs::write(alondra_core::options::path_in(&w.home), "[projects.App]\ndefaults = { effort = \"hard\" }\n").unwrap();
     let saved = plan(&w, json!({"project": "App", "model": null}));
     std::fs::remove_dir(&w.project).unwrap();
-    assert!(crate::options::project_of(&crate::options::options_at(&w.home).unwrap(), &w.project).is_none(),
+    assert!(alondra_engine_ports::options::project_of(&alondra_engine_ports::options::options_at(&w.home).unwrap(), &w.project).is_none(),
         "the retained workspace cannot infer its original project from the current project root");
     validate_reopening(&w.domain, &w.home, &"r".into(), &saved).unwrap();
     assert!(!w.project.exists());
@@ -140,7 +140,7 @@ fn preparing_reopening_uses_the_retained_project_defaults_without_the_directory_
     let relative = plan(&w, json!({"project": "App", "model": null, "cwd": "App"}));
     assert_eq!(validate_reopening(&w.domain, &w.home, &"r".into(), &relative).unwrap_err().code, "invalid_input");
 
-    let choices = crate::domain_store::RequestLaunch {
+    let choices = alondra_engine_ports::journal::RequestLaunch {
         project: Some("App".into()), options: alondra_core::options::OptionsFile::default().orchestrator_defaults(Some("App"), None),
         issue: None, issue_text: None, attachments: vec![],
     };

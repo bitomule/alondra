@@ -103,12 +103,7 @@ pub struct Hello {
     pub working: bool,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct Answer {
-    pub text: String,
-    pub at: Millis,
-    pub aborted: bool,
-}
+pub use alondra_engine_ports::live_view::Answer;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Reported {
@@ -192,6 +187,25 @@ impl Reported {
             .chain(self.answer.as_ref().map(|answer| (answer.text.as_str(), answer.at)))
             .filter(|(text, _)| !text.trim().is_empty())
             .max_by_key(|(_, at)| *at)
+    }
+
+    /// What the screens read of the report.
+    pub fn reading(&self) -> alondra_engine_ports::live_view::SessionReading {
+        alondra_engine_ports::live_view::SessionReading {
+            started_at: self.started_at,
+            cwd: self.cwd.clone(),
+            tool: self.tool.clone(),
+            answer: self.answer.clone(),
+            last_message: self.last_message().map(|(text, at)| (text.to_owned(), at)),
+            failure: self.job.as_ref().filter(|job| job.phase == crate::job_state::Phase::Failed).map(|job| job.detail.clone()).filter(|detail| !detail.is_empty()),
+            model: self.model.clone(),
+            background: self.background.iter().map(|(id, item)| (id.clone(), item.clone(), self.shell_end(item))).collect(),
+            agents: self.work.agents.clone(),
+            workflows: self.work.workflows.clone(),
+            ended_tasks: self.work.ended_tasks.clone(),
+            steps: self.work.steps.clone(),
+            cost_cents: self.sdk.as_ref().and_then(|readings| readings.cost_cents),
+        }
     }
 
     pub fn activity(&self) -> Activity {

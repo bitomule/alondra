@@ -1,7 +1,10 @@
+#[cfg(test)]
 use alondra_daemon_engine::domain_runtime::RuntimeRecords as _;
-use alondra_engine_ports::gate::GateOf as _;
+#[cfg(test)]
 use alondra_daemon_engine::live::LiveOf as _;
+#[cfg(test)]
 use alondra_daemon_engine::contexts::ContextsOf as _;
+use alondra_engine_ports::gate::GateOf as _;
 use crate::locks::Poisonable as _;
 use super::reset_time;
 use super::observation::{Observation, Metric, Cause, Stage};
@@ -13,7 +16,8 @@ use alondra_view_model::{
     Gauge, InboxTime, Lang, Level, LiveActivity, LiveBackground, LiveHistoryStep, LiveNode, LiveOrchestrator,
     LiveRun, LiveSnapshot, LiveStep, Notice, StepState, Tone,
 };
-use crate::node_work::StepStatus;
+use alondra_engine_ports::live_view::StepStatus;
+#[cfg(test)]
 use crate::node_reports::Activity;
 use serde_json::Value;
 use sha2::Digest;
@@ -159,7 +163,7 @@ struct Facts {
     domain: watch::Receiver<u64>,
     hooks: watch::Receiver<()>,
     reports: watch::Receiver<()>,
-    usage: watch::Receiver<Option<crate::usage_pause::Exhausted>>,
+    usage: watch::Receiver<Option<alondra_engine_ports::orchestrator::Exhausted>>,
     gate: watch::Receiver<u64>,
     sampled: watch::Receiver<u64>,
 }
@@ -169,15 +173,15 @@ impl Facts {
     /// would mix the two.
     fn observe(client: &crate::client_routes::Client, read: &alondra_domain_model::ReadSnapshot) -> Option<Self> {
         let state = read.state();
-        let live = client.domain.live();
+        let (live, runtime) = (&client.api.live, &*client.domain);
         let domain = client.domain.subscribe_snapshots();
-        let hooks = live.changed.subscribe();
-        let reports = live.mods.changed.subscribe();
-        let usage = live.usage_pause.subscribe();
+        let hooks = live.hooks_changes(runtime);
+        let reports = live.reports_changes(runtime);
+        let usage = live.usage_changes(runtime);
         let gate = client.domain.gate().subscribe();
         let sampled = client.feeds.subscribe_shared();
         let pull_requests = client.details.version();
-        let contexts = client.domain.contexts().version();
+        let contexts = live.contexts_version(runtime);
         let Ok((store_rows, newest)) = client.domain.live_read().read_mark() else {
             client.view_observation.invalid(Stage::Observe, Cause::Store.bit() | Cause::ReadError.bit());
             return None;
@@ -225,7 +229,7 @@ impl Marks {
         Self {
             store_rows: client.domain.live_read().read_mark().ok().map(|(rows, _)| rows),
             pull_requests: client.details.version(),
-            contexts: client.domain.contexts().version(),
+            contexts: client.api.live.contexts_version(&*client.domain),
         }
     }
 }
@@ -496,7 +500,7 @@ async fn gather_inner(
 ) -> Snapshot {
     let state = snapshot.state();
     client.view_observation.add(if clock_only { Metric::GatherSampler } else { Metric::GatherShared }, 1);
-    let (exhausted, waits_for_session) = match client.domain.live().usage_pause.current() {
+    let (exhausted, waits_for_session) = match client.api.live.usage(&*client.domain) {
         Some(standing) if standing.no_session => (None, true),
         standing => (standing, false),
     };
@@ -509,7 +513,7 @@ async fn gather_inner(
             .filter(|task| launched.as_ref().is_ok_and(|launched| !launched.contains(&task.id)))
             .map(|task| {
                 let wait = match retries.get(&task.id).filter(|(_, at)| *at > now) {
-                    Some((_, at)) => alondra_view_model::LiveStartWait::Retry { at: crate::usage_pause::clock_text(*at, now, lang == Lang::Es) },
+                    Some((_, at)) => alondra_view_model::LiveStartWait::Retry { at: alondra_engine_ports::usage::clock_text(*at, now, lang == Lang::Es) },
                     None => alondra_view_model::LiveStartWait::Room,
                 };
                 (task.id.0.clone(), wait)
@@ -533,7 +537,7 @@ async fn gather_inner(
             let mut live = client.details.live(&pr.id.0);
             live.id = pr.id.0.clone();
             live.stacked_on = stacked_below(pr, state).map(|below| below.id.0.clone());
-            live.url = Some(crate::domain_github::pr_url(&pr.host, &pr.repository, pr.number));
+            live.url = Some(alondra_engine_ports::github::pr_url(&pr.host, &pr.repository, pr.number));
             live
         })
         .collect();
@@ -649,7 +653,7 @@ async fn gather_inner(
     let keyed = gather_keyed(client, state, keys, issue_data).await;
     let live = LiveSnapshot {
         observed_at: quota_clock(state, keys, now),
-        closed_nodes: client.domain.live().closed_sessions(),
+        closed_nodes: client.api.live.closed_sessions(&*client.domain),
         closed_tasks: state.tasks.values().filter(|task| task.released.as_ref().is_some_and(|node| node.relaunch == crate::client_routes::Relaunch::AskUser))
             .map(|task| task.id.0.clone()).collect(),
         nodes: Vec::new(),
@@ -698,16 +702,16 @@ async fn gather_inner(
 pub(super) fn node_row(client: &crate::client_routes::Client, read: &alondra_domain_model::ReadSnapshot,
     id: &alondra_domain_model::AgentId, lang: Lang,
     launches: &BTreeMap<alondra_domain_model::RequestId, (Option<String>, Option<String>)>,
-    exhausted: &Option<crate::usage_pause::Exhausted>, now: Millis) -> Option<LiveNode> {
+    exhausted: &Option<alondra_engine_ports::orchestrator::Exhausted>, now: Millis) -> Option<LiveNode> {
     client.view_observation.add(Metric::AgentRows, 1);
     let state = read.state();
     let agent = state.agents.get(id)?;
     let reading = read.index().live_node(id)?;
     let session_id = agent.id.0.clone();
-    let reported = client.domain.live().mods.session(&session_id).unwrap_or_default();
+    let reported = client.api.live.session(&*client.domain, &session_id).unwrap_or_default();
     let mine: Vec<_> = reading.tasks.iter().filter_map(|id| state.tasks.get(id)).collect();
     let open_task = reading.open_task;
-    let (node, state_since) = match client.domain.live().node(&session_id) {
+    let (node, state_since) = match client.api.live.node(&*client.domain, &session_id) {
         Some(node) => {
             let state_since = Some(node.state_since);
             (node, state_since)
@@ -725,8 +729,8 @@ pub(super) fn node_row(client: &crate::client_routes::Client, read: &alondra_dom
         launched_project(&mine, agent, launches).unwrap_or_else(|| node.project())
     };
     let sdk = (agent.phase == NodePhase::ThroughSdk).then(|| reading.sdk.clone());
-    let state_key = match (&agent.phase, reported.activity()) {
-        (NodePhase::ThroughSdk, _) => match sdk.as_ref().and_then(Option::as_ref) {
+    let state_key = match agent.phase {
+        NodePhase::ThroughSdk => match sdk.as_ref().and_then(Option::as_ref) {
             Some(live) if matches!(live, alondra_domain::LiveState::Working(alondra_domain::Worker::Turn | alondra_domain::Worker::OwnWork | alondra_domain::Worker::AfterMerge
                 | alondra_domain::Worker::Alondra(alondra_domain::Step::Starting | alondra_domain::Step::Delivering | alondra_domain::Step::Waking))) => "busy",
             Some(alondra_domain::LiveState::WaitingUser(_)) if reading.waiting_on_pause => "paused",
@@ -741,14 +745,13 @@ pub(super) fn node_row(client: &crate::client_routes::Client, read: &alondra_dom
         None => tool.name.clone(),
     });
     let answer = reported.answer.as_ref().filter(|answer| !answer.text.trim().is_empty());
-    let last_message = reported.last_message();
-    let failure = reported.job.as_ref().filter(|job| job.phase == crate::job_state::Phase::Failed).map(|job| job.detail.clone()).filter(|detail| !detail.is_empty());
-    let summary = failure.or_else(|| tool.clone())
+    let last_message = reported.last_message.as_ref().map(|(text, at)| (text.as_str(), *at));
+    let summary = reported.failure.clone().or_else(|| tool.clone())
         .or_else(|| node.daemon_needs.clone())
         .or_else(|| node.daemon_detail.clone())
         .map(|summary| summary.lines().next().unwrap_or("").chars().take(141).collect());
     let running: Vec<(&str, &alondra_core::BackgroundItem)> = reported.background.iter()
-        .filter(|(_, item)| reported.shell_end(item).is_none()).map(|(id, item)| (id.as_str(), item)).collect();
+        .filter(|(_, _, end)| end.is_none()).map(|(id, item, _)| (id.as_str(), item)).collect();
     let counts = [alondra_core::BackgroundKind::Agent, alondra_core::BackgroundKind::Shell,
         alondra_core::BackgroundKind::Other].into_iter().filter_map(|kind| {
             let count = running.iter().filter(|(_, item)| item.kind == kind).count();
@@ -766,11 +769,11 @@ pub(super) fn node_row(client: &crate::client_routes::Client, read: &alondra_dom
         }).collect::<Vec<_>>();
     let background_badge = (!counts.is_empty()).then(|| counts.join(" · "));
     let context = mine.iter()
-        .find_map(|task| client.domain.contexts().used(&task.id))
+        .find_map(|task| client.api.live.context_used(&*client.domain, &task.id))
         .map(|used| (used.percent(), used.window));
     let reported_wait = reading.reported_wait.as_ref()
-        .and_then(|(provider, instance)| alondra_daemon_engine::sdk_live::wait_file(&*client.domain, *provider, instance))
-        .and_then(|path| alondra_daemon_engine::sdk_live::read_wait_file(&path))
+        .and_then(|(provider, instance)| client.api.live.wait_file(&*client.domain, *provider, instance))
+        .and_then(|path| alondra_engine_ports::live_view::read_wait_file(&path))
         .map(|wait| alondra_view_model::LiveReportedWait { what: wait.what, progress: wait.progress, detail: wait.detail, since: timestamp(wait.since_ms) });
     Some(LiveNode {
         agent_id: node.session_id,
@@ -782,7 +785,7 @@ pub(super) fn node_row(client: &crate::client_routes::Client, read: &alondra_dom
         state_label: Some(state_label),
         summary,
         needs: node.daemon_needs.clone(),
-        subagents: reported.work.agents.iter().map(|agent| LiveRun {
+        subagents: reported.agents.iter().map(|agent| LiveRun {
             label: agent.description.clone(),
             kind: agent.kind.clone(),
             model: agent.model.clone(),
@@ -791,7 +794,7 @@ pub(super) fn node_row(client: &crate::client_routes::Client, read: &alondra_dom
             state: run_state(agent.started_at, agent.end),
             workflow: None,
         }).collect(),
-        workflows: reported.work.workflows.iter().map(|workflow| {
+        workflows: reported.workflows.iter().map(|workflow| {
             let state = workflow.transcript_dir.as_deref()
                 .and_then(|dir| crate::workflow_state::read(dir, workflow.end.is_some()));
             LiveRun {
@@ -799,13 +802,13 @@ pub(super) fn node_row(client: &crate::client_routes::Client, read: &alondra_dom
                 kind: None,
                 model: None,
                 agents: state.as_ref().map(|state| state.running + state.done)
-                    .or_else(|| workflow.transcript_dir.as_deref().and_then(crate::node_work::workflow_agents)),
+                    .or_else(|| workflow.transcript_dir.as_deref().and_then(alondra_engine_ports::live_view::workflow_agents)),
                 since: timestamp(workflow.started_at),
                 state: run_state(workflow.started_at, workflow.end),
                 workflow: state,
             }
         }).collect(),
-        steps: reported.work.steps.iter().map(|step| LiveStep {
+        steps: reported.steps.iter().map(|step| LiveStep {
             subject: step.subject.clone(),
             state: match step.status {
                 StepStatus::InProgress => StepState::InProgress,
@@ -814,9 +817,9 @@ pub(super) fn node_row(client: &crate::client_routes::Client, read: &alondra_dom
             },
             active_form: step.active_form.clone(),
         }).collect(),
-        background: reported.background.iter().filter(|(id, _)| !reported.work.runs(id))
-            .map(|(_, item)| (item, reported.shell_end(item)))
-            .chain(reported.work.ended_tasks.iter().map(|task| (&task.item, Some(task.end))))
+        background: reported.background.iter().filter(|(id, _, _)| !reported.runs(id))
+            .map(|(_, item, end)| (item, *end))
+            .chain(reported.ended_tasks.iter().map(|task| (&task.item, Some(task.end))))
             .map(|(item, end)| LiveBackground {
                 kind: serde_json::to_value(item.kind).ok().and_then(|value| value.as_str().map(str::to_owned)).unwrap_or_else(|| "other".into()),
                 label: item.label.clone(),
@@ -832,10 +835,10 @@ pub(super) fn node_row(client: &crate::client_routes::Client, read: &alondra_dom
         last_message_at: last_message.map(|(_, at)| timestamp(at)),
         last_turn_aborted: answer.is_some_and(|answer| answer.aborted),
         tool: tool.map(|tool| tool.chars().take(141).collect()),
-        tool_since: reported.tool.as_ref().map(|tool| crate::usage_pause::clock_text(tool.since, now, lang == Lang::Es)),
+        tool_since: reported.tool.as_ref().map(|tool| alondra_engine_ports::usage::clock_text(tool.since, now, lang == Lang::Es)),
         context_percent: context.and_then(|(percent, _)| percent).map(|percent| percent.round().clamp(0.0, 999.0) as u32),
         context_window: context.and_then(|(_, window)| window),
-        cost_cents: reported.sdk.as_ref().and_then(|readings| readings.cost_cents),
+        cost_cents: reported.cost_cents,
         model: reported.model.clone(),
         disconnected: agent.phase == NodePhase::Closed && open_task,
         waiting_until: exhausted.as_ref().filter(|_| node.usage_limited).map(|exhausted| timestamp(exhausted.until)),
@@ -1017,9 +1020,9 @@ async fn gather_keyed(
 /// This Mac's rules «allow always», checked against their files only when its settings are on
 /// screen, and the cards whose rules Claude Code never wrote.
 fn allowed_rules(client: &crate::client_routes::Client, keys: &[String]) -> (Vec<alondra_view_model::LiveAllowedRule>, Vec<String>) {
-    use crate::allow_always::RuleState;
+    use alondra_engine_ports::journal::records::RuleState;
     let rows = if keys.iter().any(|key| key == "machine") {
-        crate::allow_always::reconcile(&*client.domain)
+        client.api.runtime.reconcile_allowed_rules(&*client.domain)
     } else {
         client.domain.live_read().allowed_rules().unwrap_or_default()
     };
@@ -1088,7 +1091,7 @@ async fn read_live_json(
 }
 
 fn search_source_revision(client: &crate::client_routes::Client, state: &DomainState) -> String {
-    let nodes = client.domain.live().nodes();
+    let nodes = client.api.live.nodes(&*client.domain);
     let nodes_by_session: BTreeMap<&str, &alondra_core::Node> = nodes.iter().map(|node| (node.session_id.as_str(), node)).collect();
     let node_tasks = alondra_domain_model::NodeTasks::new(state);
     let candidates: Vec<_> = state.agents.values().map(|agent| {
@@ -1115,7 +1118,7 @@ fn activity_agents(state: &DomainState, keys: &[String]) -> BTreeSet<String> {
 }
 
 fn activity_source_revision(client: &crate::client_routes::Client, id: &str) -> String {
-    client.domain.live().threads(id)
+    client.api.live.threads(&*client.domain, id)
         .and_then(|activity| serde_json::to_vec(&activity).ok())
         .map(|bytes| digest_hex(&bytes))
         .unwrap_or_default()
@@ -1236,7 +1239,7 @@ mod cache_tests {
             assert_eq!(observation.totals().metrics[Metric::AgentRows as usize], before.metrics[Metric::AgentRows as usize]);
             let midnight = crate::usage_pause::local_at(noon, 1, 0, 0);
             let next_day = gather_now(&client, &read, lang, &[], false, true, midnight).await;
-            assert_eq!(next_day.nodes[0].tool_since, Some(crate::usage_pause::clock_text(noon, midnight, lang == Lang::Es)));
+            assert_eq!(next_day.nodes[0].tool_since, Some(alondra_engine_ports::usage::clock_text(noon, midnight, lang == Lang::Es)));
             assert_ne!(next_day.nodes[0].tool_since, first.nodes[0].tool_since);
             assert_eq!(observation.totals().metrics[Metric::AgentRows as usize] - before.metrics[Metric::AgentRows as usize], 1);
         }
@@ -1721,7 +1724,7 @@ mod cache_tests {
         for steps in [2, 20] {
             let (home, domain, client) = wait_fixture();
             domain.store().lock().unwrap().sqlite_mut().add_task_history(314, steps);
-            let connection = rusqlite::Connection::open(crate::domain_store::active_path(&home)).unwrap();
+            let connection = rusqlite::Connection::open(alondra_engine_ports::journal::active_path(&home)).unwrap();
             let tasks: i64 = connection.query_row("SELECT count(*) FROM tasks", [], |row| row.get(0)).unwrap();
             let tasks = u64::try_from(tasks).unwrap();
             let history: i64 = connection.query_row("SELECT count(*) FROM task_history", [], |row| row.get(0)).unwrap();
@@ -1792,7 +1795,7 @@ mod cache_tests {
         assert_eq!(changed.start_waits.keys().map(String::as_str).collect::<Vec<_>>(), ["retry", "room", "send"]);
         assert_eq!(changed.start_waits["room"], LiveStartWait::Room);
         assert_eq!(changed.start_waits["send"], LiveStartWait::Room);
-        assert_eq!(changed.start_waits["retry"], LiveStartWait::Retry { at: crate::usage_pause::clock_text(now + 60_000, now, false) });
+        assert_eq!(changed.start_waits["retry"], LiveStartWait::Retry { at: alondra_engine_ports::usage::clock_text(now + 60_000, now, false) });
         assert!(trace.iter().all(|read| !read.failed));
         let launched = trace.iter().filter(|read| read.getter == "launched_tasks").collect::<Vec<_>>();
         assert_eq!(launched.iter().map(|read| (read.statement_attempts, read.rows)).collect::<Vec<_>>(), [(1, 2)],
@@ -1809,7 +1812,7 @@ mod cache_tests {
     async fn unreadable_launch_markers_fail_closed_and_trace_the_failed_reads() {
         let (home, domain, client) = wait_fixture();
         let read = domain.read();
-        let connection = rusqlite::Connection::open(crate::domain_store::active_path(&home)).unwrap();
+        let connection = rusqlite::Connection::open(alondra_engine_ports::journal::active_path(&home)).unwrap();
         connection.execute_batch("DROP TABLE model_decisions").unwrap();
         domain.kernel().reads.lock().unwrap().sqlite_mut().begin_live_read_trace();
         let live = gather_at(&client, &read, Lang::En, &[], false, false, 1_700_000_000_000).await;
@@ -1894,7 +1897,7 @@ mod cache_tests {
         let state = read.state();
         let limit = 2_000 + 48 * 60 * 60_000;
         let working = gather_at(&client, &read, Lang::En, &[], false, false, limit).await;
-        assert_eq!(working.nodes[0].tool_since, Some(crate::usage_pause::clock_text(2_000, limit, false)));
+        assert_eq!(working.nodes[0].tool_since, Some(alondra_engine_ports::usage::clock_text(2_000, limit, false)));
         domain.live().mods.set_shell_alive("reported", Some(false), limit);
         domain.live().mods.set_shell_alive("reported", Some(false), limit + 1);
         let working_view = client.views.render("tasks", &read, &working, Client::Mac, Lang::En, Transport::Loopback).unwrap();
@@ -2148,7 +2151,7 @@ mod cache_tests {
         run(Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { priority: Default::default(),
             task_id: "t-b".into(), request_id: "r".into(), title: "Phase B".into(), agent_id: Some("a".into()),
             review_prs: false, dependencies: Default::default(), stack: None,
-            launch: Some(crate::launch_plans::LaunchPlan { mission: Some("Phase B".into()), ..crate::launch_plans::LaunchPlan::new("t-b", "/tmp") }),
+            launch: Some(alondra_domain_model::LaunchPlan { mission: Some("Phase B".into()), ..alondra_domain_model::LaunchPlan::new("t-b", "/tmp") }),
             plan_items: None, continues: None,
         });
         let keys = |keys: &[&str]| keys.iter().map(|key| key.to_string()).collect::<Vec<_>>();
@@ -2539,7 +2542,7 @@ fn gauges(
     out
 }
 
-fn run_state(started_at: Millis, end: Option<crate::node_work::End>) -> alondra_view_model::RunState {
+fn run_state(started_at: Millis, end: Option<alondra_engine_ports::live_view::End>) -> alondra_view_model::RunState {
     match end {
         None => alondra_view_model::RunState::Running,
         Some(end) => alondra_view_model::RunState::Ended { outcome: end.outcome, ran_secs: end.at.saturating_sub(started_at).max(0) as u64 / 1000 },

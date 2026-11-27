@@ -4,7 +4,7 @@
 use alondra_engine_kernel::domain_runtime::RuntimeRecords as _;
 use crate::locks::{Poisonable as _, AfterPanic as _};
 use alondra_core::{Event, HookEvent, Node, View, now_millis};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Mutex, atomic::{AtomicU64, Ordering}};
 
@@ -342,66 +342,12 @@ fn hook_event(payload: &Value) -> Option<HookEvent> {
     })
 }
 
-/// The nodes `/runtime` lists. A node of the Agent SDK reads its state from its task's lifecycle,
-/// never from what the deduction kept for `claude --bg` nodes made of it, and is listed even when
-/// that deduction never saw it. `since` is when a task last changed state.
-pub fn runtime_nodes(deduced: Vec<Node>, state: &alondra_domain_model::DomainState, since: impl Fn(&alondra_domain_model::TaskId) -> Option<i64>) -> Vec<Value> {
-    use alondra_domain_model::AgentId;
-    let sdk = |agent: &AgentId| through_sdk(state, agent);
-    let mut nodes: Vec<Node> = deduced.into_iter().filter(|node| state.agents.contains_key(&AgentId(node.session_id.clone()))).collect();
-    let unseen: Vec<Node> = state.agents.keys()
-        .filter(|agent| sdk(agent) && state.sdk_live(agent).is_some() && !nodes.iter().any(|node| node.session_id == agent.0))
-        .map(|agent| Node::new(&agent.0, state.node_task(agent).and_then(|task| since(&task.id)).unwrap_or_default()))
-        .collect();
-    nodes.extend(unseen);
-    nodes.iter_mut().filter(|node| sdk(&AgentId(node.session_id.clone()))).for_each(|node| from_lifecycle(node, state));
-    nodes.iter().map(|node| client_node(node, state.agents.get(&AgentId(node.session_id.clone())).map(|agent| agent.name.as_str()))).collect()
-}
-
-fn from_lifecycle(node: &mut Node, state: &alondra_domain_model::DomainState) {
-    use alondra_core::{NodeState, NodeStatus, StateSource};
-    use alondra_domain::LiveState;
-    let agent = alondra_domain_model::AgentId(node.session_id.clone());
-    let result = state.node_task(&agent).and_then(|task| task.final_presentation.as_ref());
-    node.state = match state.sdk_live(&agent) {
-        Some(LiveState::Working(_)) => NodeState::Working,
-        Some(LiveState::WaitingUser(cards)) if cards.iter().all(|card| Some(card) == result) => NodeState::WaitingMerge,
-        Some(LiveState::Paused) => NodeState::Idle,
-        Some(LiveState::WaitingUser(_) | LiveState::WaitingTask(_)) => NodeState::WaitingAnswer,
-        Some(LiveState::WaitingCapacity(_)) => NodeState::WaitingMachine,
-        None => NodeState::Done,
-    };
-    node.status = match node.state {
-        NodeState::Working => NodeStatus::Busy,
-        NodeState::WaitingMachine => NodeStatus::WaitingMachine,
-        _ => NodeStatus::Free,
-    };
-    node.busy = node.state == NodeState::Working;
-    node.state_source = StateSource::Daemon;
-    node.evidence = None;
-}
-
-fn through_sdk(state: &alondra_domain_model::DomainState, agent: &alondra_domain_model::AgentId) -> bool {
-    state.through_sdk(agent) || state.node_phase(agent) == Some(&alondra_domain_model::NodePhase::ThroughSdk)
-}
-
-/// A node as a client reads it: what the daemon keeps for itself stays out.
-pub(crate) fn client_node(node: &Node, name: Option<&str>) -> Value {
-    let mut value = serde_json::to_value(node).unwrap_or(Value::Null);
-    if let Some(fields) = value.as_object_mut() {
-        fields.remove("alive");
-        fields.remove("ledger");
-        if node.name.is_none() {
-            fields.insert("name".into(), json!(name));
-        }
-        fields.insert("project".into(), json!(node.project()));
-    }
-    value
-}
+pub use alondra_engine_ports::live_view::{client_node, runtime_nodes, through_sdk};
 
 #[cfg(test)]
 mod change_tests {
     use super::*;
+    use serde_json::json;
     use alondra_foundation::changes::{Changed, Cursor};
     use std::collections::BTreeSet;
 
@@ -517,6 +463,7 @@ mod change_tests {
 mod sdk_node_tests {
     use alondra_domain_rules::Apply as _;
     use super::*;
+    use serde_json::json;
     use alondra_domain_model::{Actor, Command, CommandEnvelope, DomainState, LaunchPlan, PROTOCOL_VERSION};
     use std::collections::BTreeSet;
 
@@ -593,6 +540,7 @@ mod sdk_node_tests {
 #[cfg(test)]
 mod poison_tests {
     use super::*;
+    use serde_json::json;
     use crate::locks::{assert_exited_for, child_home, in_child};
 
     #[test]

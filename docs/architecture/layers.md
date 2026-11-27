@@ -118,7 +118,13 @@ marker, …) to `engine-ports`, which `daemon-support` re-exports for the engine
 Phase 7c took three more away: the server reaches `engine-sdk`, `engine-admission` and
 `engine-orchestrator` only through the port `DomainApi` of `engine-ports`, whose parts each of
 those pieces gives the registry in its `wire`, and the root, not the server, opens the daemon and
-runs `--preflight`. Phase 3b moved `agent-runtime`
+runs `--preflight`. Phase 7d took the last one, on `daemon-engine`: the server reads the live view
+(the nodes the hooks deduced, what each node's mod reported, the contexts and the waits), the
+accounts, the messages to nodes, the orchestrator's tools, the pull requests and the MCP servers
+through the parts of `DomainApi` that `daemon-engine` gives the registry, and the values they speak
+in (`live_view`, `mcp`, `pr_images`, `options`, `issues`, `local_actions`, …) live in
+`engine-ports`. `daemon-server` has no exception left, and links the engine only in its tests.
+Phase 3b moved `agent-runtime`
 behind the `AgentHost` port of `engine-ports`: no provider or piece of the engine depends on it,
 only the roots and the tests that start real hosts.
 

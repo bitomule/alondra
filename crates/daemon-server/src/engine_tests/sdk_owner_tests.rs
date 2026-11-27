@@ -4,7 +4,7 @@ use alondra_engine_admission::AdmissionOf as _;
 use alondra_engine_sdk::sdk_owner::SdkOwners as _;
 use alondra_daemon_engine::live::LiveOf as _;
 use alondra_domain::ActivityView;
-use crate::domain_store::StoreError;
+use alondra_engine_ports::journal::StoreError;
 #[cfg(feature = "real-hosts")]
 use crate::engine_tests::engine_fixtures::owner::codex::*;
 use crate::engine_tests::engine_fixtures::owner::*;

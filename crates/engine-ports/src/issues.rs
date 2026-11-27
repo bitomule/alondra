@@ -3,7 +3,7 @@ use alondra_core::now_millis;
 use alondra_core::options::OptionsFile;
 use serde::Serialize;
 
-use alondra_engine_ports::github::Gh;
+use crate::github::Gh;
 
 /// A list younger than this is served again without asking GitHub.
 pub const FRESH_MS: i64 = 10 * 60 * 1000;

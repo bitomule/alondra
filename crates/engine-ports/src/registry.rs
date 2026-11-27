@@ -5,7 +5,7 @@ use crate::admission::{AdmissionEngine, AdmissionGate};
 use crate::agent_host::AgentHost;
 use crate::agent_workers::AgentProviders;
 use crate::disk::Disk;
-use crate::domain_api::{AdmissionApi, OrchestratorApi, RuntimeApi, SdkApi};
+use crate::domain_api::{AccountsApi, AdmissionApi, LiveApi, McpApi, MessagesApi, OrchestratorApi, PullRequestsApi, RuntimeApi, SdkApi, ToolsApi};
 use crate::github::GitHub;
 use crate::hosts::SdkHosts;
 use crate::machine::MachineProbe;
@@ -109,9 +109,10 @@ impl Registry {
     }
 }
 
-fn every_port() -> [(TypeId, &'static str); 22] {
+fn every_port() -> [(TypeId, &'static str); 28] {
     [
         (TypeId::of::<dyn Accounts>(), "Accounts"),
+        (TypeId::of::<dyn AccountsApi>(), "AccountsApi"),
         (TypeId::of::<AgentProviders>(), "AgentProviders"),
         (TypeId::of::<dyn AgentHost>(), "AgentHost"),
         (TypeId::of::<dyn AdmissionEngine>(), "AdmissionEngine"),
@@ -119,11 +120,15 @@ fn every_port() -> [(TypeId, &'static str); 22] {
         (TypeId::of::<dyn AdmissionApi>(), "AdmissionApi"),
         (TypeId::of::<dyn Disk>(), "Disk"),
         (TypeId::of::<GitHub>(), "GitHub"),
+        (TypeId::of::<dyn LiveApi>(), "LiveApi"),
         (TypeId::of::<dyn MachineProbe>(), "MachineProbe"),
+        (TypeId::of::<dyn McpApi>(), "McpApi"),
+        (TypeId::of::<dyn MessagesApi>(), "MessagesApi"),
         (TypeId::of::<dyn OrchestratorEngine>(), "OrchestratorEngine"),
         (TypeId::of::<dyn OrchestratorApi>(), "OrchestratorApi"),
         (TypeId::of::<dyn Plugins>(), "Plugins"),
         (TypeId::of::<dyn Processes>(), "Processes"),
+        (TypeId::of::<dyn PullRequestsApi>(), "PullRequestsApi"),
         (TypeId::of::<dyn RuntimeApi>(), "RuntimeApi"),
         (TypeId::of::<dyn ScheduleClock>(), "ScheduleClock"),
         (TypeId::of::<dyn SdkApi>(), "SdkApi"),
@@ -132,6 +137,7 @@ fn every_port() -> [(TypeId, &'static str); 22] {
         (TypeId::of::<dyn Screens>(), "Screens"),
         (TypeId::of::<dyn SessionWorktrees>(), "SessionWorktrees"),
         (TypeId::of::<dyn SignInReturns>(), "SignInReturns"),
+        (TypeId::of::<dyn ToolsApi>(), "ToolsApi"),
         (TypeId::of::<dyn Worktrees>(), "Worktrees"),
     ]
 }
@@ -163,7 +169,7 @@ mod tests {
     #[test]
     fn a_registry_names_every_port_nothing_implements() {
         let registry = Registry::default();
-        assert_eq!(registry.missing(), ["Accounts", "AgentProviders", "AgentHost", "AdmissionEngine", "AdmissionGate", "AdmissionApi", "Disk", "GitHub", "MachineProbe", "OrchestratorEngine", "OrchestratorApi", "Plugins", "Processes", "RuntimeApi", "ScheduleClock", "SdkApi", "SdkEngine", "SdkHosts", "Screens", "SessionWorktrees", "SignInReturns", "Worktrees"]);
+        assert_eq!(registry.missing(), ["Accounts", "AccountsApi", "AgentProviders", "AgentHost", "AdmissionEngine", "AdmissionGate", "AdmissionApi", "Disk", "GitHub", "LiveApi", "MachineProbe", "McpApi", "MessagesApi", "OrchestratorEngine", "OrchestratorApi", "Plugins", "Processes", "PullRequestsApi", "RuntimeApi", "ScheduleClock", "SdkApi", "SdkEngine", "SdkHosts", "Screens", "SessionWorktrees", "SignInReturns", "ToolsApi", "Worktrees"]);
         struct Greeter;
         impl Greets for Greeter {
             fn greet(&self) -> &'static str {
@@ -171,6 +177,6 @@ mod tests {
             }
         }
         registry.provide::<dyn Greets>(Arc::new(Greeter));
-        assert_eq!(registry.missing().len(), 22, "a port outside the required ones never counts");
+        assert_eq!(registry.missing().len(), 28, "a port outside the required ones never counts");
     }
 }

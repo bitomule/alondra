@@ -4,7 +4,7 @@
 use alondra_daemon_engine::live::LiveOf as _;
 use alondra_daemon_server::auth;
 use alondra_daemon_server::domain_bootstrap::{DomainDaemon, router};
-use alondra_daemon_server::domain_runtime::DomainRuntime;
+use alondra_daemon_engine::domain_runtime::DomainRuntime;
 use alondra_domain_model::*;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -43,7 +43,7 @@ impl Daemon {
         });
         let _ = std::fs::remove_file(home.join("hooks.sock"));
         let socket = tokio::net::UnixListener::bind(home.join("hooks.sock")).unwrap();
-        let hooks = tokio::spawn(alondra_daemon_server::domain_transport::serve(socket, domain.clone()));
+        let hooks = tokio::spawn(alondra_daemon_engine::domain_transport::serve(socket, domain.clone()));
         let auth = state_auth;
         Self { domain, auth, port, server, hooks }
     }

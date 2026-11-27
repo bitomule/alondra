@@ -41,7 +41,7 @@ pub(crate) async fn check(
                 crate::client_routes::hand_back_conflicts(
                     &*client.domain,
                     &client.details,
-                    &crate::domain_messages::user_name(),
+                    &alondra_core::config::user_name(),
                 );
                 return Gate::Drop("pr_conflicts");
             }

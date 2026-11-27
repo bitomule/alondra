@@ -35,17 +35,7 @@ pub struct SessionStart {
 
 /// How much of its model's window the root conversation uses after its last request; the window
 /// is unknown until Claude says it at the end of a turn.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Used {
-    pub tokens: u64,
-    pub window: Option<u64>,
-}
-
-impl Used {
-    pub fn percent(&self) -> Option<f64> {
-        self.window.map(|window| self.tokens as f64 * 100.0 / window as f64)
-    }
-}
+pub use alondra_engine_ports::live_view::Used;
 
 #[derive(Clone, Copy, Debug)]
 struct Started {

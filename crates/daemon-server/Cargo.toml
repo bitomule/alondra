@@ -15,7 +15,6 @@ alondra-core.workspace = true
 alondra-host.workspace = true
 alondra-domain-model.workspace = true
 alondra-view-model.workspace = true
-alondra-daemon-engine.workspace = true
 alondra-e2e = { path = "../e2e" }
 alondra-domain.workspace = true
 anyhow.workspace = true
@@ -39,6 +38,7 @@ tokio.workspace = true
 toml.workspace = true
 
 [dev-dependencies]
+alondra-daemon-engine.workspace = true
 alondra-domain-rules.workspace = true
 alondra-engine-admission.workspace = true
 alondra-engine-orchestrator.workspace = true

@@ -36,38 +36,7 @@ pub struct Removal {
     pub loaded: BTreeMap<String, u64>,
 }
 
-/// Why a server is not deleted.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Refused {
-    /// Nothing reports it any more, or its project is no longer listed.
-    Gone,
-    /// It is configured where the user deletes it, not in their own settings.
-    Kept(McpOrigin),
-    /// Claude could not delete it.
-    Failed(String),
-}
-
-impl Refused {
-    pub fn message(&self, name: &str, lang: alondra_view_model::Lang) -> String {
-        let es = lang == alondra_view_model::Lang::Es;
-        match self {
-            Self::Gone if es => "Este servidor MCP ya no aparece".into(),
-            Self::Gone => "This MCP server is no longer listed".into(),
-            Self::Kept(McpOrigin::ProjectSettings) if es => format!("{name} está en la configuración compartida del proyecto, en su repositorio: bórralo allí"),
-            Self::Kept(McpOrigin::ProjectSettings) => format!("{name} is in the project's shared settings, in its repository: delete it there"),
-            Self::Kept(McpOrigin::Plugin) if es => format!("{name} lo aporta un plugin: desinstala el plugin para quitarlo"),
-            Self::Kept(McpOrigin::Plugin) => format!("{name} comes from a plugin: uninstall the plugin to remove it"),
-            Self::Kept(McpOrigin::Connector) if es => format!("{name} es un conector de tu cuenta: quítalo en la web del proveedor"),
-            Self::Kept(McpOrigin::Connector) => format!("{name} is a connector of your account: remove it on the provider's website"),
-            Self::Kept(McpOrigin::Managed) if es => format!("{name} lo configura tu organización"),
-            Self::Kept(McpOrigin::Managed) => format!("{name} is configured by your organization"),
-            Self::Kept(_) if es => format!("Alondra no sabe dónde está configurado {name}"),
-            Self::Kept(_) => format!("Alondra does not know where {name} is configured"),
-            Self::Failed(why) if es => format!("Claude Code no pudo borrar {name}: {why}"),
-            Self::Failed(why) => format!("Claude Code could not delete {name}: {why}"),
-        }
-    }
-}
+pub use alondra_engine_ports::mcp::Refused;
 
 /// The server `subject` names (its target, and its project's after a dot) as the open tasks'
 /// `nodes` and the checks report it, and what deleting it takes. `Err` carries the server's name

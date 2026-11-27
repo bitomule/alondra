@@ -111,7 +111,7 @@ pub async fn catch_up_task(domain: &DomainRuntime, github: &GitHub, task_id: &Ta
 
 /// Branches and the PRs the node opened are read from `github`; registered PRs use the caller's
 /// source of current facts.
-pub async fn catch_up_task_using(domain: &dyn alondra_engine_ports::Runtime, github: &GitHub, source: &impl PrObserver, task_id: &TaskId, is_final: bool) -> Result<()> {
+pub async fn catch_up_task_using(domain: &dyn alondra_engine_ports::Runtime, github: &GitHub, source: &(impl PrObserver + ?Sized), task_id: &TaskId, is_final: bool) -> Result<()> {
     let domain = DomainRuntime::of(domain);
     let state = domain.state()?;
     let Some(task) = state.tasks.get(task_id) else { return Ok(()) };

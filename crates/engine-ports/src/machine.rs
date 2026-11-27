@@ -1,6 +1,11 @@
 //! The Mac the daemon runs on, read through [`MachineProbe`], and why it has no room for one more
 //! node, as the admission gate reports it.
 use alondra_core::{Machine, MemoryPressure};
+use std::sync::Arc;
+
+/// The latest gauges of the resource API daemon, read by `/daemon` for the TUI header. A sample is
+/// only ever replaced whole, so a lock whose holder panicked still holds a whole one.
+pub type Gauges = Arc<std::sync::Mutex<Option<(Machine, Option<alondra_core::usage::Usage>, Vec<alondra_core::usage::ProviderUsage>)>>>;
 
 /// Where the gauges of the Mac come from: its memory, load and own disk in production, a fixed or
 /// scripted Mac in a test or a scenario. It only measures; what to do with a sample is decided above.
