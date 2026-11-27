@@ -227,7 +227,7 @@ fn the_host_of_a_batch_takes_one_prompt_and_refuses_another() {
         domain: Arc::clone(&f.executor.domain), selection: fixture_selection(),
     };
     let ((configuration, _preparing), profile) = (configuration(&batch).unwrap(), profile(&batch));
-    let mut host = BatchHost::start(ProviderOwner(batch.owner), &configuration, session, false, &profile, "fixture:hold the first batch").unwrap();
+    let mut host = alondra_provider_claude::BatchHost::start(batch.owner, &configuration, session, false, &profile, "fixture:hold the first batch").unwrap();
     f.wait_held();
     assert_eq!(host.offer("the second batch").unwrap(), Handoff::RefusedBeforeOffer, "one batch, one turn");
     f.release();
@@ -338,6 +338,19 @@ async fn a_batch_with_an_alondra_tool_refused_is_the_users_call() {
     assert_eq!(load(&f.executor.home).unwrap().failure, Some(Failure::Denied));
     assert_eq!(f.attempts(), ["uncertain"]);
     assert_eq!(f.cards("problem-orchestrator-").len(), 1);
+}
+
+/// A batch on Claude with no Claude batches wired starts no host, and its error names Claude.
+#[tokio::test]
+async fn a_batch_on_a_provider_nobody_wired_starts_nothing_and_names_it() {
+    let f = fixture();
+    f.domain().ports().provide::<alondra_engine_ports::batch_hosts::BatchProviders>(Arc::new(Default::default()));
+    f.tell("m-1", "Where do I put change 1?");
+    f.tick().await;
+    let runtime = load(&f.executor.home).unwrap();
+    assert!(runtime.last_error.as_deref().is_some_and(|error| error.contains("Claude")), "{runtime:?}");
+    assert!(f.starts().is_empty(), "no host starts");
+    assert_eq!(f.attempts(), ["retryable"]);
 }
 
 #[tokio::test]

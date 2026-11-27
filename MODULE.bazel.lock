@@ -792,7 +792,7 @@
           "@@//crates/engine-kernel/Cargo.toml": "b4d6d5aca2244da076f31f772102a916139ea05a8c203f5b6841d1b298878530",
           "@@//crates/engine-live/Cargo.toml": "605f8e4334d604a9b9df4ff508282860215325b711a230e456a9b6e5e7f240b0",
           "@@//crates/engine-mcp/Cargo.toml": "7381172b57e4a66b3851ab414898f331c38aa2e97fe141873a02a78fb489f9cd",
-          "@@//crates/engine-orchestrator/Cargo.toml": "28d839c084b838440d0859231524533d202c1860b69697ea7587abf5949a861d",
+          "@@//crates/engine-orchestrator/Cargo.toml": "3c3c7b2f4b0642783789e98ea80d828b62b2ae83f93560556cdd4f5874347261",
           "@@//crates/engine-ports/Cargo.toml": "c21a85d426473e5a3f7208f5cf4069886f0bb19e97ae8543626c5ee7c8217a10",
           "@@//crates/engine-sdk/Cargo.toml": "e0de56abec54de719a3b367f9161464ceb746b3a15ffa89b9fa3727660bec5e4",
           "@@//crates/engine-worktrees/Cargo.toml": "f076e0674e43c33a72d2cf6fa2d78e0f400785afa6280d5aa7da4ae0331a210d",

@@ -14,9 +14,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Adds Codex to the providers the engine runs agents on.
+/// Adds Codex to the providers the engine runs agents and orchestrator batches on.
 pub fn wire(registry: &Registry) {
     AgentProviders::add(registry, Arc::new(Codex));
+    alondra_engine_ports::batch_hosts::BatchProviders::add(registry, Arc::new(crate::batch::Batches));
 }
 
 pub struct Codex;

@@ -1,12 +1,11 @@
 use alondra_engine_kernel::sdk_backend::SdkOf as _;
-use crate::orchestrator_provider::ProviderOwner;
 use crate::engine::OrchestratorOf as _;
 use crate::domain_store::batch_effects::BatchReport;
 use crate::orchestrator_process::{Output, Stream, bounded};
 use crate::orchestrator_provider::Batch;
 use alondra_engine_ports::agent_host::VerifiedArtifact;
 use alondra_engine_ports::agent_workers::WorkerConfiguration;
-use alondra_provider_codex::{BatchHost, HostEvent, McpServer, OrchestratorProfile};
+use alondra_engine_ports::batch_hosts::{BatchHost, HostEvent, McpServer, OrchestratorProfile};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -260,10 +259,11 @@ fn failure(error: &Value, stream: &mut Stream) {
 }
 
 fn run(batch: Batch, spawned: impl FnOnce() -> anyhow::Result<()>, cancelled: &AtomicBool) -> Output {
+    let batches = match alondra_engine_ports::batch_hosts::of(batch.domain.ports(), alondra_core::accounts::Provider::Codex) { Ok(value) => value, Err(error) => return failed(error.to_string()) };
     let (configuration, _preparing) = match configuration(&batch) { Ok(value) => value, Err(error) => return failed(format!("{error:#}")) };
     let profile = match profile(&batch) { Ok(value) => value, Err(error) => { crate::orchestrator_sdk::remove_folder(&configuration.state_directory); return failed(format!("{error:#}")) } };
     let run = batch.owner.run().to_owned();
-    let mut host = match BatchHost::start(ProviderOwner(batch.owner), &configuration, &batch.session, batch.resume, &profile, &batch.prompt) {
+    let mut host = match batches.start(batch.owner, &configuration, &batch.session, batch.resume, &profile, &batch.prompt) {
         Ok(value) => value,
         Err(error) => {
             crate::orchestrator_sdk::remove_folder(&configuration.state_directory);
@@ -332,7 +332,7 @@ fn run(batch: Batch, spawned: impl FnOnce() -> anyhow::Result<()>, cancelled: &A
 }
 /// Stops the batch's host, and deletes its folder, `spent`, once it ended: one whose batch could
 /// not record what it observed keeps its folder, whose outbox still holds it.
-fn stop(host: BatchHost<ProviderOwner>, directory: &Path, spent: Option<&Path>) {
+fn stop(host: Box<dyn BatchHost>, directory: &Path, spent: Option<&Path>) {
     match host.stop() {
         Ok(())=>{let _=std::fs::remove_file(directory.join("owner.json")); spent.into_iter().for_each(crate::orchestrator_sdk::remove_folder);}
         Err(error)=>log!("orchestrator: Codex did not stop cleanly; its process owner record is retained: {error:?}"),
@@ -682,6 +682,19 @@ candidates=[{model="fixture-model",reasoning_effort="high"}]
         assert_eq!(report["turn_completed"], true);
         assert!(report["failure"].is_null());
         assert!(!f.executor.home.join("runtime/orchestrator/owner.json").exists());
+    }
+
+    /// A batch on Codex with no Codex batches wired starts no host, and its error names Codex.
+    #[tokio::test]
+    async fn a_batch_on_codex_nobody_wired_starts_nothing_and_names_it() {
+        let (f,trace)=on_codex(|_|BTreeMap::from([("ALONDRA_FAKE_MODE".into(),"complete".into())]));
+        f.domain().ports().provide::<alondra_engine_ports::batch_hosts::BatchProviders>(Arc::new(Default::default()));
+        f.tell("unwired-codex-request", "Run this batch on a provider nobody wired");
+        f.tick().await;
+        let runtime = crate::domain_orchestrator::load(&f.executor.home).unwrap();
+        assert!(runtime.last_error.as_deref().is_some_and(|error| error.contains("Codex")), "{runtime:?}");
+        assert!(!trace.exists(), "the fake Codex never ran");
+        assert_eq!(f.attempts(), ["retryable"]);
     }
 
     #[tokio::test]

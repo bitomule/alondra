@@ -6,57 +6,16 @@ use alondra_engine_ports::agent_workers::WorkerConfiguration;
 use crate::records::SessionRecord;
 use crate::wire::{Connection, ControlIdentity, HostOwner, execution, fence};
 use alondra_agent_protocol::{Action, Body, Command, FailureSurface, Observation, SdkEventKind, SdkFailure};
-use alondra_engine_ports::agent_host::{HostLaunch, OwnedHost};
+use alondra_engine_ports::agent_host::{HostLaunch, HostStop, OwnedHost};
+use alondra_engine_ports::agent_workers::Provider;
+use alondra_engine_ports::batch_hosts::{self as port, BatchProvider};
+use alondra_engine_ports::journal::BatchOwner;
 use alondra_foundation::{CommandId, MessageUuid};
 use alondra_provider_contract::{AdapterError, Handoff};
-use serde::Serialize;
 use serde_json::Value;
-use std::collections::BTreeMap;
-use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-/// The Claude an orchestrator batch runs: its model, its tools and MCP server and nothing else,
-/// its plugins and settings. Whether the batch resumes the orchestrator's conversation or starts
-/// one is `BatchHost::start`'s `resume`.
-#[derive(Clone, Debug, Serialize)]
-pub struct OrchestratorProfile {
-    pub model: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reasoning_effort: Option<String>,
-    pub tools: Vec<String>,
-    pub disallowed_tools: Vec<String>,
-    pub mcp_servers: BTreeMap<String, McpServer>,
-    pub plugins: Vec<PathBuf>,
-    pub settings: serde_json::Map<String, Value>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct McpServer {
-    pub command: PathBuf,
-    pub args: Vec<String>,
-}
-
-/// What the host saw of the batch's turn, in its order.
-#[derive(Clone, Debug, PartialEq)]
-pub enum HostEvent {
-    /// A message of the SDK, exactly as it came.
-    Sdk(Value),
-    /// What Claude wrote to stderr, or why the host could not read the SDK any further. Its text is
-    /// for display and logs only.
-    Diagnostic { source: DiagnosticSource, text: String },
-    /// The native session asked the orchestrator for a decision it never grants.
-    UnexpectedDecision,
-    /// Claude's process ended.
-    Exited { code: Option<i32>, signal: Option<String> },
-}
-
-/// Where a diagnostic came from.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum DiagnosticSource {
-    Stderr,
-    Failure { surface: FailureSurface, code: String },
-    Unknown,
-}
+pub use alondra_engine_ports::batch_hosts::{DiagnosticSource, HostEvent, McpServer, OrchestratorProfile, PendingHostEvent};
 
 fn diagnostic(payload: &Value, failures: &[SdkFailure]) -> HostEvent {
     if payload["source"] == "stderr" && let Some(text) = payload["text"].as_str() {
@@ -64,11 +23,16 @@ fn diagnostic(payload: &Value, failures: &[SdkFailure]) -> HostEvent {
     }
     match failures.first() {
         Some(failure) => HostEvent::Diagnostic {
-            source: DiagnosticSource::Failure { surface: failure.surface, code: failure.code.clone() },
+            source: DiagnosticSource::Failure { surface: surface_name(failure.surface), code: failure.code.clone() },
             text: payload["text"].as_str().unwrap_or(&failure.code).to_owned(),
         },
         None => HostEvent::Diagnostic { source: DiagnosticSource::Unknown, text: payload["text"].as_str().unwrap_or("diagnostic").to_owned() },
     }
+}
+
+/// The name the protocol gives `surface` on the wire.
+fn surface_name(surface: FailureSurface) -> String {
+    serde_json::to_value(surface).ok().and_then(|name| name.as_str().map(str::to_owned)).unwrap_or_default()
 }
 
 fn host_event(observation: &Observation) -> HostEvent {
@@ -78,13 +42,6 @@ fn host_event(observation: &Observation) -> HostEvent {
         Observation::DecisionRequested { .. } | Observation::DecisionSettled { .. } => HostEvent::UnexpectedDecision,
         Observation::ProcessExited { exit_code, signal } => HostEvent::Exited { code: *exit_code, signal: signal.clone() },
     }
-}
-
-pub struct PendingHostEvent {
-    pub cursor: u64,
-    pub event: HostEvent,
-    /// Exact bounded JSON bytes validated against this batch's ownership fence.
-    pub evidence: Vec<u8>,
 }
 
 /// The host of one batch. Its input takes one prompt: the host refuses any later one, so a
@@ -197,7 +154,7 @@ impl<O: HostOwner> BatchHost<O> {
         self.pending=None;Ok(())
     }
 
-    pub fn stopper(&self) -> alondra_engine_ports::agent_host::HostStop {
+    pub fn stopper(&self) -> HostStop {
         self.host.stopper()
     }
 
@@ -232,6 +189,41 @@ fn deadline(timeout: Duration) -> Result<Instant, AdapterError> {
     alondra_foundation::clock::instant().into_std().checked_add(timeout).ok_or(AdapterError::Disconnected)
 }
 
+/// The orchestrator's batches on Claude, which `wire` adds to the registry.
+pub struct Batches;
+
+impl BatchProvider for Batches {
+    fn provider(&self) -> Provider { Provider::Claude }
+    fn start(&self, owner: BatchOwner, configuration: &WorkerConfiguration, session: &str, resume: bool,
+        profile: &OrchestratorProfile, prompt: &str) -> Result<Box<dyn port::BatchHost>, AdapterError> {
+        Ok(Box::new(BatchHost::start(owner, configuration, session, resume, profile, prompt)?))
+    }
+}
+
+impl port::BatchHost for BatchHost<BatchOwner> {
+    fn input(&self) -> &str { BatchHost::input(self) }
+    fn process_id(&self) -> u32 { BatchHost::process_id(self) }
+    fn readable(&self, timeout: Duration) -> Result<bool, AdapterError> { BatchHost::readable(self, timeout) }
+    fn next_pending(&mut self) -> Result<PendingHostEvent, AdapterError> { BatchHost::next_pending(self) }
+    fn acknowledge(&mut self, cursor: u64) -> Result<(), AdapterError> { BatchHost::acknowledge(self, cursor) }
+    fn stopper(&self) -> HostStop { BatchHost::stopper(self) }
+    fn stop(self: Box<Self>) -> Result<(), AdapterError> { BatchHost::stop(*self) }
+}
+
+/// A batch's claim owns its host: the orchestrator's run and conversation, at the one generation
+/// a claim has.
+impl HostOwner for BatchOwner {
+    fn owner_generation(&self) -> u64 { 1 }
+    fn epoch(&self) -> &alondra_foundation::DataEpoch { BatchOwner::epoch(self) }
+    fn host(&self) -> &str { self.host_name() }
+    fn wire_execution(&self) -> alondra_agent_protocol::Execution {
+        alondra_agent_protocol::Execution::Orchestrator(alondra_agent_protocol::OrchestratorExecution {
+            lane: alondra_agent_protocol::OrchestratorLane::Orchestrator,
+            run_id: self.run().to_owned(), conversation_id: self.session().to_owned(), generation: 1,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -248,7 +240,7 @@ mod tests {
         assert_eq!(observed(json!({"type": "sdk", "kind": "diagnostic", "native": {}, "payload": {"source": "stderr", "text": phrase}, "failures": []})),
             HostEvent::Diagnostic { source: DiagnosticSource::Stderr, text: phrase.into() });
         assert_eq!(observed(json!({"type": "sdk", "kind": "diagnostic", "native": {}, "payload": {}, "failures": [{"surface": "transport", "code": "decision_too_large", "details": {}}]})),
-            HostEvent::Diagnostic { source: DiagnosticSource::Failure { surface: FailureSurface::Transport, code: "decision_too_large".into() }, text: "decision_too_large".into() });
+            HostEvent::Diagnostic { source: DiagnosticSource::Failure { surface: "transport".into(), code: "decision_too_large".into() }, text: "decision_too_large".into() });
         assert_eq!(observed(json!({"type": "sdk", "kind": "diagnostic", "native": {}, "payload": {}, "failures": []})),
             HostEvent::Diagnostic { source: DiagnosticSource::Unknown, text: "diagnostic".into() });
     }

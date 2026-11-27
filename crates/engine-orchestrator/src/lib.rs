@@ -31,12 +31,13 @@ pub fn wire(registry: &alondra_engine_ports::Registry) {
     registry.provide::<dyn alondra_engine_ports::domain_api::OrchestratorApi>(std::sync::Arc::new(domain_orchestrator::Api));
 }
 
-/// The runtime the orchestrator's tests open: the orchestrator's own port, the doubled agent hosts
-/// the host models play, doubles of the rest of the engine, and the faults a test injects at its home failing the orchestrator's writes there.
+/// The runtime the orchestrator's tests open: the orchestrator's own port, the batches of Claude and
+/// Codex on the doubled agent hosts the host models play, doubles of the rest of the engine, and the faults a test injects at its home failing the orchestrator's writes there.
 #[cfg(test)]
 mod wiring {
     use crate::engine::OrchestratorOf as _;
     use alondra_daemon_engine_model::faults;
+    use alondra_engine_ports::batch_hosts::BatchProviders;
     use alondra_engine_ports::hosts::SdkHosts;
     use alondra_engine_ports::orchestrator::OrchestratorEngine;
     use std::sync::Arc;
@@ -48,6 +49,8 @@ mod wiring {
         alondra_engine_doubles::machine::wire(domain.ports(), alondra_daemon_support::watcher::claude_home);
         domain.ports().provide::<dyn OrchestratorEngine>(Arc::new(alondra_engine_doubles::orchestrator::Engine));
         domain.ports().provide::<dyn SdkHosts>(Arc::new(alondra_engine_doubles::hosts::NoHosts));
+        BatchProviders::add(domain.ports(), Arc::new(alondra_provider_claude::Batches));
+        BatchProviders::add(domain.ports(), Arc::new(alondra_provider_codex::Batches));
         provide_hosts(&domain, home);
         let injected = &domain.orchestrator().injected;
         let at = home.to_owned();

@@ -14,9 +14,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Adds Claude to the providers the engine runs agents on.
+/// Adds Claude to the providers the engine runs agents and orchestrator batches on.
 pub fn wire(registry: &Registry) {
     AgentProviders::add(registry, Arc::new(Claude));
+    alondra_engine_ports::batch_hosts::BatchProviders::add(registry, Arc::new(crate::batch::Batches));
 }
 
 pub struct Claude;
