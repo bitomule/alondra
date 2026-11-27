@@ -6,6 +6,7 @@
 
 use alondra_scenarios::from_report::{Leak, convert};
 use alondra_scenarios_transcript::{guard, scratch};
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 const PUBLIC_DATA_GUARD: &str = "tools/public_data_guard.py";
@@ -22,8 +23,8 @@ fn report_check(files: &[(&str, &str)], originals: &[String], values: &[String])
 }
 
 /// The public data guard of the repository over the files, written for it into a new folder
-/// inside `staging`.
-fn public_data_guard(files: &[(&str, &str)], script: &Path, staging: &Path) -> Vec<Leak> {
+/// inside `staging`, run by `python`.
+fn public_data_guard(files: &[(&str, &str)], python: &OsStr, script: &Path, staging: &Path) -> Vec<Leak> {
     let refused = |why: String| vec![Leak { file: PUBLIC_DATA_GUARD.into(), line: 0, rule: format!("public data guard did not run: {why}") }];
     let folder = match tempfile::Builder::new().prefix("from-report-").tempdir_in(staging) {
         Ok(folder) => folder,
@@ -35,7 +36,7 @@ fn public_data_guard(files: &[(&str, &str)], script: &Path, staging: &Path) -> V
             return refused(error.to_string());
         }
     }
-    let output = match std::process::Command::new("python3").arg(script).arg("--files").arg(folder.path()).args(files.iter().map(|(name, _)| name)).output() {
+    let output = match std::process::Command::new(python).arg(script).arg("--files").arg(folder.path()).args(files.iter().map(|(name, _)| name)).output() {
         Ok(output) => output,
         Err(error) => return refused(error.to_string()),
     };
@@ -68,7 +69,7 @@ fn main() {
     let values: Vec<String> = literals.iter().cloned().chain(alondra::private_values_of_this_mac()).collect();
     let script: PathBuf = workspace.join(PUBLIC_DATA_GUARD);
     let report = |files: &[(&str, &str)], originals: &[String]| report_check(files, originals, &values);
-    let public = |files: &[(&str, &str)], _: &[String]| public_data_guard(files, &script, &staging);
+    let public = |files: &[(&str, &str)], _: &[String]| public_data_guard(files, OsStr::new("python3"), &script, &staging);
     let draft = convert(Path::new(package), name, &out, &literals, &[&report, &public]).unwrap_or_else(|refusal| fail(&refusal.to_string()));
     println!("{} written with {} gap(s) to complete; read gaps.txt first", out.display(), draft.gaps.lines().count().saturating_sub(1));
 }
