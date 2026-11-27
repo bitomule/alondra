@@ -557,7 +557,12 @@ trait TimeoutWriter {
 }
 impl TimeoutWriter for UnixStream {
     fn timeout(&self, duration: std::time::Duration) -> std::io::Result<()> {
-        self.set_write_timeout(Some(duration))
+        match self.set_write_timeout(Some(duration)) {
+            // macOS answers EINVAL once the host closed its end: the bytes already written reached
+            // it, and a write of more fails with the error that says why.
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidInput && error.raw_os_error().is_some() => Ok(()),
+            set => set,
+        }
     }
 }
 fn budget(deadline: Instant, now: Instant) -> std::io::Result<std::time::Duration> {
@@ -874,5 +879,29 @@ mod tests {
         .unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
         assert_eq!(writer.0, b"c");
+    }
+
+    /// The host reads a whole command and closes its end before the write's last step, as a host
+    /// does that refuses its launch: the command was written, and what the host did with it is for
+    /// the read that follows to say.
+    #[test]
+    fn a_command_the_host_read_before_closing_its_end_was_written() {
+        use std::io::Read as _;
+        let (mut daemon, host) = UnixStream::pair().unwrap();
+        let mut host = Some(host);
+        let now = Instant::now();
+        let mut readings = 0;
+        write_bounded(&mut daemon, b"command", now + Duration::from_secs(60), || {
+            readings += 1;
+            if readings == 2 {
+                let mut host = host.take().expect("the host reads once");
+                let mut read = [0; 7];
+                host.read_exact(&mut read).unwrap();
+                assert_eq!(&read, b"command");
+            }
+            now
+        })
+        .unwrap();
+        assert_eq!(readings, 2);
     }
 }

@@ -158,7 +158,7 @@ fn launch(prompt: &str, worker: Option<WorkerProfile>) -> Launched {
     let under = under_test(&directory, &home);
     let database = directory.join("domain.db");
     let connection = rusqlite::Connection::open(&database).unwrap();
-    connection.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+    connection.execute_batch("PRAGMA foreign_keys=ON; PRAGMA synchronous=OFF").unwrap();
     connection.execute_batch(include_str!("../../domain-store-schema/schema.sql")).unwrap();
     connection.execute_batch("CREATE TABLE task_worktrees(task_id TEXT PRIMARY KEY,dir TEXT NOT NULL,at INTEGER NOT NULL); INSERT INTO domain_meta VALUES(1,'case-epoch',0,0); INSERT INTO requests(id,body,closed) VALUES('case-request','Work',0); INSERT INTO agents(id,name) VALUES('case-node','Worker'); INSERT INTO tasks(id,request_id,title,state,revision,started,review_prs,archived) VALUES('case-task','case-request','Case task','not_started',0,0,0,0)").unwrap();
     connection.execute("INSERT INTO task_worktrees VALUES('case-task',?1,0)", [cwd.to_str().unwrap()]).unwrap();

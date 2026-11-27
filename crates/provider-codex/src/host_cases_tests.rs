@@ -176,12 +176,52 @@ impl Setup {
     }
 }
 
+/// A started batch's host, stopped however the case ends: a case that fails leaves no host
+/// running in its folder.
+struct Running(Option<BatchHost<BatchOwner>>);
+
+impl std::ops::Deref for Running {
+    type Target = BatchHost<BatchOwner>;
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref().expect("a running batch")
+    }
+}
+
+impl std::ops::DerefMut for Running {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.0.as_mut().expect("a running batch")
+    }
+}
+
+impl Running {
+    fn stop(mut self) -> Result<(), AdapterError> {
+        self.0.take().expect("a running batch").stop()
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        if let Some(host) = self.0.take() {
+            let _ = host.stopper().kill();
+            let _ = host.stop();
+        }
+    }
+}
+
+/// A clock for the daemon's side of a case that only moves when the case moves it, which none
+/// does: no deadline of the batch passes while the host and its fake Codex start and answer.
+fn held_clock() -> alondra_foundation::clock::VirtualRuntime {
+    alondra_foundation::clock::VirtualRuntime::new(0).unwrap()
+}
+
 /// Runs one batch whose fake app-server plays `mode`, reading every event as the orchestrator
 /// does: each acknowledged at a cursor above the last, until Codex exits.
 fn batch(mode: &str) -> Batch {
+    let clock = held_clock();
+    let _held = clock.enter();
     let setup = setup(mode);
-    let mut host = setup.start()
-        .unwrap_or_else(|error| panic!("the batch did not start: {error:?} ({:?}) {:?}", (setup.under.trouble)(), left_behind(&setup.configuration.state_directory)));
+    let mut host = Running(Some(setup.start()
+        .unwrap_or_else(|error| panic!("the batch did not start: {error:?} ({:?}) {:?}", (setup.under.trouble)(), left_behind(&setup.configuration.state_directory)))));
     let (mut events, mut last) = (Vec::new(), None);
     loop {
         let pending = host.next_pending().unwrap();
@@ -264,6 +304,8 @@ fn a_codex_batch_refuses_the_native_request_of_its_turn_and_still_ends_when_the_
 
 #[test]
 fn a_codex_host_with_an_incomplete_role_environment_starts_no_app_server_and_leaves_the_prompt_unanswered() {
+    let clock = held_clock();
+    let _held = clock.enter();
     for missing in ["ALONDRA_HOME", "ALONDRA_DOMAIN_CAPABILITY", "ALONDRA_DOMAIN_PROTOCOL", "ALONDRA_SESSION_ID", "ALONDRA_PROVIDER"] {
         let mut setup = setup("complete");
         assert!(setup.configuration.native_environment.remove(missing).is_some(), "{missing}");

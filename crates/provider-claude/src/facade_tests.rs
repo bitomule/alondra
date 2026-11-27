@@ -20,7 +20,7 @@ impl Fixture {
         let directory = test_support::Directory::new();
         std::fs::create_dir_all(&*directory).unwrap();
         let mut connection = SqlConnection::open(directory.join("domain.db")).unwrap();
-        connection.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+        connection.execute_batch("PRAGMA foreign_keys=ON; PRAGMA synchronous=OFF").unwrap();
         connection
             .execute_batch(include_str!("../../domain-store-schema/schema.sql"))
             .unwrap();
