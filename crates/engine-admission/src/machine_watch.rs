@@ -29,7 +29,7 @@ use alondra_engine_ports::usage::Alerts;
 
 pub(crate) const FILE: &str = "machine-incident.json";
 /// Measurements in a row past the recovery line that end an incident: one alone may be a blip.
-const HEALTHY_SAMPLES: u32 = 2;
+pub const HEALTHY_SAMPLES: u32 = 2;
 const TICK: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
