@@ -1,0 +1,24 @@
+id = "task-flow"
+owns = [
+  "crates/domain-rules/src/rules/spec_rules.rs",
+  "crates/domain-rules/src/rules/validation_rules.rs",
+  "crates/domain-rules/src/rules/continuation_rules.rs",
+  "crates/domain-rules/src/stage_rules.rs",
+  "crates/domain-model/src/stages.rs",
+  "crates/domain-model/src/delivery_validation.rs",
+  "crates/domain-model/src/checks/open_pr.rs",
+  "crates/domain-model/src/checks/spec_rules.rs",
+]
+depends_on = ["spec-engine"]
+
+[[suite]]
+id = "rules"
+run = ["bazelisk", "test", "//crates/domain-rules:domain_rules_test"]
+tests = ["crates/domain-rules/src/task_flow_tests.rs"]
+timeout_minutes = 60
+
+[[suite]]
+id = "views"
+run = ["bazelisk", "test", "//crates/views:views_test"]
+tests = ["crates/views/src/task_flow_tests.rs"]
+timeout_minutes = 60
