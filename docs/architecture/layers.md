@@ -118,7 +118,13 @@ marker, …) to `engine-ports`, which `daemon-support` re-exports for the engine
 Phase 7c took three more away: the server reaches `engine-sdk`, `engine-admission` and
 `engine-orchestrator` only through the port `DomainApi` of `engine-ports`, whose parts each of
 those pieces gives the registry in its `wire`, and the root, not the server, opens the daemon and
-runs `--preflight`. Phase 3b moved `agent-runtime`
+runs `--preflight`. Phase 7d took the last one, on `daemon-engine`: the server reads the live view
+(the nodes the hooks deduced, what each node's mod reported, the contexts and the waits), the
+accounts, the messages to nodes, the orchestrator's tools, the pull requests and the MCP servers
+through the parts of `DomainApi` that `daemon-engine` gives the registry, and the values they speak
+in (`live_view`, `mcp`, `pr_images`, `options`, `issues`, `local_actions`, …) live in
+`engine-ports`. `daemon-server` has no exception left, and links the engine only in its tests.
+Phase 3b moved `agent-runtime`
 behind the `AgentHost` port of `engine-ports`: no provider or piece of the engine depends on it,
 only the roots and the tests that start real hosts.
 
@@ -129,7 +135,7 @@ down from 52 to 49). The adapter of the SDK's hosts is `agent-runtime`, behind `
 `sdk-host` crate was needed. Nothing else of the engine names the Antigravity crates: `engine-sdk`
 passes agy's messages to the live view through `SdkEngine::feed_antigravity`, so `engine-live` and
 `daemon-engine` read plain JSON. The Claude and Codex providers are still reached directly by
-`daemon-engine`, `engine-live`, `engine-mcp`, `engine-orchestrator` and `store-sqlite`.
+`daemon-engine`, `engine-live`, `engine-mcp` and `store-sqlite`.
 
 Phase 2 of the plan to empty the list put the data the engine shares with its adapters in the
 `ports` layer, the criterion phase 7e used for `uploads`, `stored_files` and `watcher`:
@@ -142,3 +148,9 @@ its copy; the wall-clock timers of the schedule runner are the `system` adapter'
 (its response and the status of each domain refusal) is `daemon-server`'s, and the model keeps only
 the `Reply` value; and the model takes `locks` and `save` from `foundation`. They are not part of
 `engine-ports` because an edit there reopens far more of the build than an edit of either of them.
+
+Phase 5 put the orchestrator's batches behind the `BatchProvider` port of `engine-ports`
+(`batch_hosts.rs`), with neutral types for the profile, the MCP server and what the host saw, and
+the batch's claim (`BatchOwner`) as the host's owner: Claude and Codex each add theirs in their
+`wire`, and `engine-orchestrator` depends on neither (two entries gone, the ceiling down from 24 to
+22). Its two drivers stay apart.

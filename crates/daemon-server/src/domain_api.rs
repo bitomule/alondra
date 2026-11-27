@@ -1,11 +1,11 @@
 //! Resource-oriented domain API. Both local HTTP and encrypted transport call the
 //! same runtime through `DomainHost`.
-use crate::domain_store::IntoDomainError as _;
+use alondra_engine_ports::journal::IntoDomainError as _;
 use alondra_core::clock;
 use crate::locks::Poisonable as _;
 use crate::auth::{Signed, is_local};
 use crate::principal::Principal;
-use crate::domain_store::{StoreError, TransportIdentity};
+use alondra_engine_ports::journal::{StoreError, TransportIdentity};
 use alondra_engine_ports::Runtime;
 use alondra_engine_ports::domain_api::Lane;
 pub(crate) use crate::reply::status_for;
@@ -34,11 +34,11 @@ pub trait DomainHost: Send + Sync + 'static {
 /// What a final delivery needs from GitHub before it is stored: no draft PR, and no configured
 /// private name in a public one. Other commands need nothing.
 async fn final_delivery_review(
-    home: &FsPath, merger: Arc<dyn crate::domain_merges::PrMerger>, gh: Arc<dyn alondra_engine_ports::github::Gh>, state: Arc<DomainState>,
+    api: &alondra_engine_ports::domain_api::DomainApi, home: &FsPath, merger: Arc<dyn alondra_engine_ports::github::PrMerger>, gh: Arc<dyn alondra_engine_ports::github::Gh>, state: Arc<DomainState>,
     command: &Command,
 ) -> Result<Option<crate::public_content::Reviewed>, DomainError> {
     let Command::PresentResult { task_id, targets, is_final: true, .. } = command else { return Ok(None) };
-    if let Some(refusal) = crate::domain_merges::draft_refusal(&state, &state.with_open_prs(task_id, targets), &merger).await {
+    if let Some(refusal) = api.pull_requests.draft_refusal(&state, &state.with_open_prs(task_id, targets), &*merger).await {
         return Err(refusal);
     }
     crate::public_content::check(home, &state, command, &gh).await
@@ -182,7 +182,7 @@ async fn attachment_content_inner(
         return domain_error(DomainError::new("not_found", "interaction attachment does not exist"));
     };
     let home = home.to_path_buf();
-    let reads = crate::runtime_api::stored_reads(domain);
+    let reads = alondra_engine_ports::domain_api::DomainApi::of(domain.ports()).runtime.stored_reads(domain);
     let digest = stored.content_digest.clone();
     match alondra_core::clock::spawn_blocking(move || {
         reads.attachment(&home, &stored.content_reference, &stored.content_digest, offset, version)
@@ -245,7 +245,7 @@ pub(crate) async fn document_content_inner(domain: &dyn Runtime, home: &FsPath, 
     let response_digest = digest.clone();
     let revision_id = revision.id.clone();
     let home = home.to_path_buf();
-    let reads = crate::runtime_api::stored_reads(domain);
+    let reads = alondra_engine_ports::domain_api::DomainApi::of(domain.ports()).runtime.stored_reads(domain);
     let chunk = alondra_core::clock::spawn_blocking(move || {
         reads.verified(&home, &reference, &digest, offset, version)
     })
@@ -578,7 +578,7 @@ pub(crate) fn check_launch_shape(method: &str, path: &str, body: &Value) -> Resu
         _ => None,
     };
     match launch.filter(|launch| !launch.is_null()) {
-        Some(launch) => serde_json::from_value::<crate::launch_plans::LaunchPlan>(launch.clone()).map(drop)
+        Some(launch) => serde_json::from_value::<alondra_domain_model::LaunchPlan>(launch.clone()).map(drop)
             .map_err(|error| DomainError::new("invalid_input", format!("launch: {error}"))),
         None => Ok(()),
     }
@@ -1079,11 +1079,11 @@ async fn checked_producer_command<H: DomainHost>(
         && let state = host.domain().state()
         && let Some(task) = state.tasks.get(task_id)
     {
-        let left: Vec<(String, String)> = crate::task_worktrees::leftovers(host.domain(), task).await.into_iter()
+        let left: Vec<(String, String)> = host.api().pull_requests.leftovers(host.domain(), task).await.into_iter()
             .filter(|(path, _)| !discard.contains(path))
             .collect();
         if !left.is_empty() {
-            let mut refusal = DomainError::new("worktree_not_clean", crate::task_worktrees::settle_text(task_id, &left));
+            let mut refusal = DomainError::new("worktree_not_clean", alondra_engine_ports::worktrees::settle_text(task_id, &left));
             refusal.subject = Some("discard".into());
             return Err(refusal);
         }
@@ -1092,13 +1092,13 @@ async fn checked_producer_command<H: DomainHost>(
         let state = host.domain().state();
         let github = host.domain().ports().github();
         let merger = host.new_work_client().map_or_else(|| github.merger.clone(), crate::client_routes::Client::pr_merger);
-        steps.step("the public content review", final_delivery_review(host.home(), merger, github.reads.clone(), state, &envelope.command)).await?
+        steps.step("the public content review", final_delivery_review(host.api(), host.home(), merger, github.reads.clone(), state, &envelope.command)).await?
     } else { None };
     let work = host.api().runtime.work(host.domain(), Lane::Producer).clone();
     let mut envelope = envelope;
     steps.step("storing it", work.run(move || {
         check_launch_plan(host.domain(), host.home(), &envelope.command)?;
-        crate::launch_plans::stamp_project(host.domain(), host.home(), &mut envelope.command);
+        host.api().tools.stamp_project(host.domain(), host.home(), &mut envelope.command);
         crate::spec_checks::stamp(host.domain(), &mut envelope.command)?;
         crate::validation_checks::stamp(host.domain(), &mut envelope.command)?;
         let kept = crate::result_files::keep(host.home(), &mut envelope.command)?;
@@ -1241,14 +1241,15 @@ fn storage_error() -> Response {
 /// Whether the launch plan of a new Task is one a launch would accept: its folder exists and its
 /// model and effort fit the request. A Task without a plan is refused by the domain itself.
 pub(crate) fn check_launch_plan(domain: &dyn Runtime, home: &std::path::Path, command: &Command) -> Result<(), DomainError> {
+    let tools = alondra_engine_ports::domain_api::DomainApi::of(domain.ports()).tools;
     match command {
         Command::CreateTask { request_id, launch: Some(plan), .. }
         | Command::SettleSuggestion { decision: SuggestionDecision::NewTask { request_id, launch: plan, .. }, .. } =>
-            crate::launch_plans::validate(domain, home, request_id, plan),
+            tools.validate_launch_plan(domain, home, request_id, plan),
         Command::SettlePlanReview { task_id, outcome: alondra_domain_model::PlanReviewOutcome::PlanChanged { launch: plan, .. }, .. } => {
             let state = domain.state();
             let task = state.tasks.get(task_id).ok_or_else(|| DomainError::new("not_found", "task does not exist"))?;
-            crate::launch_plans::validate(domain, home, &task.request_id, plan)
+            tools.validate_launch_plan(domain, home, &task.request_id, plan)
         }
         _ => Ok(()),
     }
@@ -1408,7 +1409,7 @@ mod tests {
             review_prs: false, dependencies: Default::default(), stack: None, plan_items: None, continues: Some("task-a".into()),
             launch: Some(serde_json::from_value(json!({"name":"node", "cwd":path, "model":"sonnet", "reason":"fixture"})).unwrap()),
         });
-        let observer = rusqlite::Connection::open(crate::domain_store::active_path(&host.home)).unwrap();
+        let observer = rusqlite::Connection::open(alondra_engine_ports::journal::active_path(&host.home)).unwrap();
         observer.execute_batch("CREATE TRIGGER fail_continuation BEFORE INSERT ON task_checklists WHEN NEW.task_id='continued'
             BEGIN SELECT RAISE(ABORT,'injected continuation cause'); END;").unwrap();
         let before = host.domain.state();

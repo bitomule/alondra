@@ -70,11 +70,11 @@ crates/daemon-engine/src/domain_messages.rs	hash.finalize().iter().map(|byte| fo
 crates/system/src/launch_worktree.rs	let dir = PathBuf::from(entry.lines().find_map(|line| line.strip_prefix("worktree "))?);	format	git worktree list --porcelain
 crates/system/src/launch_worktree.rs	let branch = entry.lines().find_map(|line| line.strip_prefix("branch refs/heads/")).map(str::to_owned);	format	git worktree list --porcelain
 crates/engine-ports/src/worktrees.rs	let slug: String = name.to_lowercase().chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' }).collect();	format	branch slug built from a name
-crates/engine-github/src/pr_images.rs	let host = host.to_ascii_lowercase();	format	URL host and attachment uuid normalised
-crates/engine-github/src/pr_images.rs	return uuid_like(uuid).then(|| Source::Uploaded { uuid: uuid.to_ascii_lowercase() });	format	URL host and attachment uuid normalised
-crates/engine-github/src/pr_images.rs	["user-attachments", "assets", uuid] if uuid_like(uuid) => Some(Source::Uploaded { uuid: uuid.to_ascii_lowercase() }),	format	URL host and attachment uuid normalised
-crates/engine-github/src/pr_images.rs	[_, _, "assets", _, uuid] if uuid_like(uuid) => Some(Source::Uploaded { uuid: uuid.to_ascii_lowercase() }),	format	URL host and attachment uuid normalised
-crates/engine-github/src/pr_images.rs	links.entry(uuid.to_ascii_lowercase()).or_insert(link);	format	URL host and attachment uuid normalised
+crates/engine-ports/src/pr_images.rs	let host = host.to_ascii_lowercase();	format	URL host and attachment uuid normalised
+crates/engine-ports/src/pr_images.rs	return uuid_like(uuid).then(|| Source::Uploaded { uuid: uuid.to_ascii_lowercase() });	format	URL host and attachment uuid normalised
+crates/engine-ports/src/pr_images.rs	["user-attachments", "assets", uuid] if uuid_like(uuid) => Some(Source::Uploaded { uuid: uuid.to_ascii_lowercase() }),	format	URL host and attachment uuid normalised
+crates/engine-ports/src/pr_images.rs	[_, _, "assets", _, uuid] if uuid_like(uuid) => Some(Source::Uploaded { uuid: uuid.to_ascii_lowercase() }),	format	URL host and attachment uuid normalised
+crates/engine-ports/src/pr_images.rs	links.entry(uuid.to_ascii_lowercase()).or_insert(link);	format	URL host and attachment uuid normalised
 crates/engine-ports/src/uploads.rs	Path::new(name).extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default()	format	file extension or URL scheme
 crates/core/src/accounts.rs	if !names.insert(name.to_lowercase()) {	format	emails and account names compare without case
 crates/core/src/artifact.rs	if kind == "claude.ai/artifact/" && text[..i].ends_with("claude.ai/code/") {	format	artifact URL
@@ -152,7 +152,7 @@ crates/store/src/journal_format.rs	let (kind, remaining) = if let Some(value) = 
 crates/store/src/journal_format.rs	} else if let Some(value) = body.strip_prefix("VIEW IF NOT EXISTS ") {	own-grammar	migration by equality with our own DDL (G-10)
 crates/store/src/journal_format.rs	} else if let Some(value) = body.strip_prefix("UNIQUE INDEX IF NOT EXISTS ") {	own-grammar	migration by equality with our own DDL (G-10)
 crates/store/src/journal_format.rs	} else if let Some(value) = body.strip_prefix("TRIGGER IF NOT EXISTS ") {	own-grammar	migration by equality with our own DDL (G-10)
-crates/engine-mcp/src/mcp_waits.rs	Some(if id.starts_with(MCP_SERVER_PREFIX) { Self::Server(id.to_owned()) } else { Self::Card(InteractionId::from(id)) })	own-grammar	McpServerKey id grammar; a card target is checked by its system_card
+crates/engine-ports/src/mcp.rs	Some(if id.starts_with(MCP_SERVER_PREFIX) { Self::Server(id.to_owned()) } else { Self::Card(InteractionId::from(id)) })	own-grammar	McpServerKey id grammar; a card target is checked by its system_card
 crates/cli/src/account.rs	if header_host.is_none_or(|h| h.trim() != format!("127.0.0.1:{expected_port}")) {	security-parse	Host header of the loopback callback
 crates/cli-report/src/report/canary.rs	let lowered = value.to_lowercase();	security-parse	privacy check of a failure report before it is sent
 crates/cli-report/src/report/canary.rs	let lowered = text.to_lowercase();	security-parse	privacy check of a failure report before it is sent

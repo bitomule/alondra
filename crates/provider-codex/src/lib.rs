@@ -18,7 +18,7 @@ mod conformance_tests;
 mod host_cases_tests;
 
 pub use adapter::{CodexWorker, Found, answered_by_event, answered_control, native_exited};
-pub use batch::{BatchHost, HostEvent, PendingHostEvent, McpServer, OrchestratorProfile};
+pub use batch::{BatchHost, Batches, HostEvent, McpServer, OrchestratorProfile, PendingHostEvent};
 pub use context::{ContextEvent, SessionFailure, context_event, native_message, account_refusal, session_failure};
 pub use ended::{EndedJournal, Retained};
 pub use agent::{wire, Codex};

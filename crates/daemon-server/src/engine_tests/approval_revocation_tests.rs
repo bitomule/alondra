@@ -25,7 +25,7 @@ fn external_revocation_waits_for_authorized_domain_commit() {
             &STANDARD.encode(key.verifying_key().to_sec1_bytes()),
         )
         .unwrap();
-    let runtime = Arc::new(DomainRuntime::open_unwired_at(&home, &crate::domain_store::active_path(&home)).unwrap());
+    let runtime = Arc::new(DomainRuntime::open_unwired_at(&home, &alondra_engine_ports::journal::active_path(&home)).unwrap());
     let state = runtime.state().unwrap();
     let envelope = CommandEnvelope {
         protocol_version: PROTOCOL_VERSION,

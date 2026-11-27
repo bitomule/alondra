@@ -1,11 +1,12 @@
 //! Technical delivery of committed v2 effects. An outbox handoff is not a
 //! business decision, user acceptance, or proof that Claude acted on a turn.
+#[cfg(test)]
 use alondra_daemon_engine::live::LiveOf as _;
 use alondra_core::clock;
 use alondra_core::clock::Instant;
 use crate::locks::Poisonable as _;
 use alondra_engine_ports::Runtime;
-use crate::domain_store::OutboxMessage;
+use alondra_engine_ports::journal::OutboxMessage;
 use crate::push::Push;
 use crate::service::Service;
 use alondra_core::delivery::State;
@@ -38,7 +39,7 @@ pub async fn run(
             let mut store = domain.store().lock_or_exit("the domain store");
             store.discard_expired_orchestrator_messages(
                 alondra_core::now_millis()
-                    .saturating_sub(crate::domain_store::ORCHESTRATOR_MESSAGE_TTL_MS),
+                    .saturating_sub(alondra_engine_ports::journal::ORCHESTRATOR_MESSAGE_TTL_MS),
             )?;
             let held = store.user_notices_in_open_passes()?;
             store.pending_messages()?.into_iter().filter(|message| !held.contains(&message.id)).collect::<Vec<_>>()
@@ -71,7 +72,7 @@ pub(crate) async fn deliver_from_runtime(
     let to_sdk_node = message.recipient_kind == "agent" && Some(domain.state()).is_some_and(|state| {
         message.agent_id.as_ref().is_some_and(|agent| {
             let agent = AgentId(agent.clone());
-            crate::sdk_live::runs_through_sdk(&state, &agent) || crate::sdk_handover::successor(domain, &agent).is_some()
+            alondra_engine_ports::hosts::runs_through_sdk(&state, &agent) || client.api.messages.successor(domain, &agent).is_some()
         })
     });
     // A node of `claude --bg` takes its messages through its mod's connection, and the orchestrator
@@ -121,22 +122,23 @@ pub(crate) fn tell_sdk_nodes(domain: &dyn Runtime) -> usize {
 /// What Alondra tells the node of an SDK task becomes an input of its lifecycle, kept before it
 /// leaves for the host. A retry after a crash finds the same command already told.
 fn tell_sdk_node(domain: &dyn Runtime, message: &OutboxMessage) -> std::result::Result<(), (State, &'static str)> {
+    let messages = alondra_engine_ports::domain_api::DomainApi::of(domain.ports()).messages;
     let state = domain.state();
     let agent = message.agent_id.clone().ok_or((State::Discarded, "no_agent"))?;
     let task = message.task_id.clone().map(TaskId::from)
         .or_else(|| state.tasks.values().find(|t| t.agent_id.as_ref().is_some_and(|node| node.0 == agent) && !t.state.terminal()).map(|t| t.id.clone()))
-        .or_else(|| crate::sdk_handover::successor(domain, &AgentId(agent.clone())).map(|(task, _)| task))
+        .or_else(|| messages.successor(domain, &AgentId(agent.clone())).map(|(task, _)| task))
         .ok_or((State::Discarded, "no_task"))?;
-    let text = crate::domain_transport::render(&state, message);
-    let from_user = crate::domain_transport::from_user(&state, message);
+    let text = messages.render(&state, message);
+    let from_user = messages.from_user(&state, message);
     let answers = answered_card(&state, &task, message);
     let author = if from_user || answers.is_some() {
         let origin = domain.store().lock_or_exit("the domain store").message_origin(message.id).map_err(|_| (State::Retryable, "domain_unavailable"))?;
-        origin.map_or_else(|| crate::node_push::ALONDRA.to_owned(), |(_, actor)| crate::node_push::author_of(&actor))
+        origin.map_or_else(|| alondra_engine_ports::outbox::ALONDRA.to_owned(), |(_, actor)| alondra_engine_ports::outbox::author_of(&actor))
     } else {
-        crate::node_push::ALONDRA.to_owned()
+        alondra_engine_ports::outbox::ALONDRA.to_owned()
     };
-    match crate::domain_messages::tell_sdk_node_answering(domain, &task, &author, &text, &format!("tell-outbox-{}", message.id), from_user, answers.clone()) {
+    match messages.tell_sdk_node(domain, &task, &author, &text, &format!("tell-outbox-{}", message.id), from_user, answers.clone()) {
         Ok(()) => Ok(()),
         Err(error) if error.code == "idempotency_conflict" => Ok(()),
         Err(error) if matches!(error.code.as_str(), "storage_unavailable" | "stale_revision") => {
@@ -286,11 +288,11 @@ fn quieted_by(domain: &dyn Runtime, read: &ReadSnapshot, message: &OutboxMessage
     let resurfaced_at = message.interaction_id.as_deref()
         .and_then(|id| read.state().interactions.get(&InteractionId::from(id)))
         .and_then(|card| card.resurfaced_at_revision);
-    let at_desk = domain.live().touched_since(&AT_DESK_CLIENTS, now - AT_DESK_FOR_MS);
+    let at_desk = alondra_engine_ports::domain_api::DomainApi::of(domain.ports()).live.touched_since(domain, &AT_DESK_CLIENTS, now - AT_DESK_FOR_MS);
     Ok(quiet_reason(history, resurfaced_at, at_desk))
 }
 
-fn quiet_reason(history: crate::domain_store::UserPushHistory, resurfaced_at: Option<u64>, at_desk: bool) -> Option<Quieted> {
+fn quiet_reason(history: alondra_engine_ports::journal::UserPushHistory, resurfaced_at: Option<u64>, at_desk: bool) -> Option<Quieted> {
     let reminder = resurfaced_at.is_some_and(|returned| history.card_pushed_at.is_none_or(|told| returned > told));
     if history.card_pushed_at.is_some() && !reminder {
         Some(Quieted::Repeat)
@@ -1123,7 +1125,7 @@ mod tests {
 
     #[test]
     fn a_card_sounds_once_unless_it_returns_from_a_snooze_and_the_mac_tells_when_the_user_is_there() {
-        use crate::domain_store::UserPushHistory;
+        use alondra_engine_ports::journal::UserPushHistory;
         let never = UserPushHistory::default();
         let told_at = |revision| UserPushHistory { card_pushed_at: Some(revision), sibling_pushed: false };
         assert_eq!(quiet_reason(never, None, false), None);

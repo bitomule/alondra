@@ -28,9 +28,7 @@ adapter_in_crate(
     srcs = production_sources(test_only = TEST_ONLY),
     crate_name = "alondra_daemon_server",
     version = VERSION,
-    deps = all_crate_deps(normal = True) + WORKSPACE_DEPS + [
-        "//crates/daemon-engine:daemon_engine",
-    ],
+    deps = all_crate_deps(normal = True) + WORKSPACE_DEPS,
 )
 
 # What every test target compiles besides the sources: the fixtures the server's tests read.

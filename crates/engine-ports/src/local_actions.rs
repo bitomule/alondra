@@ -2,7 +2,7 @@
 //! and the read/write locks on the resources an action touches.
 
 use alondra_core::clock;
-use crate::locks::Poisonable as _;
+use alondra_foundation::locks::Poisonable as _;
 
 pub struct LocalActionReceipt {
     pub body: Vec<u8>,
@@ -155,8 +155,8 @@ pub trait LocalActionsOf {
     fn local_actions(&self) -> &LocalActions;
 }
 
-impl<R: alondra_engine_ports::Runtime + ?Sized> LocalActionsOf for R {
+impl<R: crate::Runtime + ?Sized> LocalActionsOf for R {
     fn local_actions(&self) -> &LocalActions {
-        alondra_engine_ports::extension(self.as_runtime())
+        crate::extension(self.as_runtime())
     }
 }

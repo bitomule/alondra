@@ -13,7 +13,7 @@ import tempfile
 import unittest
 import zipfile
 
-from prepare import (GateError, IOS, EXT, LIVE_ACTIVITY, MAC, PROFILES, TEAM, only_identity, prepare_output, read_versions, uncommitted,
+from prepare import (built_archive, GateError, IOS, EXT, LIVE_ACTIVITY, MAC, PROFILES, TEAM, only_identity, prepare_output, read_versions, uncommitted,
                      validate_archive, validate_profile, snapshot_archive, verify_pkg_leaf, verify_pkg_trust,
                      validate_store_metadata, normalize_bundle, bom_problems, pkg_problems, verify_pkg_contents,
                      stripped_components)
@@ -177,6 +177,13 @@ class DistributionInputTests(unittest.TestCase):
 
 
 class BetaInputTests(unittest.TestCase):
+    def test_the_built_archive_is_found_under_the_execution_root(self):
+        outputs = ["bazel-out/ios/bin/apple/AlondraiOS.ipa", "bazel-out/ios/bin/apple/report.txt"]
+        self.assertEqual(built_archive("/base/execroot/_main", outputs, ".ipa"),
+                         Path("/base/execroot/_main/bazel-out/ios/bin/apple/AlondraiOS.ipa"))
+        with self.assertRaisesRegex(GateError, "Expected one Bazel archive"):
+            built_archive("/base/execroot/_main", outputs, ".zip")
+
     def test_version_and_build_come_from_the_shared_file(self):
         self.assertRegex(read_versions()[0], r"^[0-9]+\.[0-9]+\.[0-9]+$")
         with tempfile.TemporaryDirectory() as directory:

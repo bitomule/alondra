@@ -2114,7 +2114,7 @@ where = "crates/daemon-engine-machine/src/swap_disk.rs"
 decides = "pace"
 [[timer]]
 name = "FRESH_MS"
-where = "crates/daemon-engine-model/src/issues.rs"
+where = "crates/engine-ports/src/issues.rs"
 decides = "pace"
 [[timer]]
 name = "CHECK_EVERY"
@@ -3268,7 +3268,7 @@ truth = ["memory"]
 
 ```toml state-machine
 id = "M-ENGINE-24"
-code = ["crates/engine-live/src/node_work.rs::NodeWork", "crates/engine-live/src/node_work.rs::StepStatus"]
+code = ["crates/engine-live/src/node_work.rs::NodeWork", "crates/engine-ports/src/live_view.rs::StepStatus"]
 truth = ["memory"]
 ```
 
@@ -3353,11 +3353,11 @@ truth = ["sqlite:domain_outbox", "sqlite:stop_blocks", "memory"]
 
 ```toml state-machine
 id = "M-ENGINE-27"
-code = ["crates/engine-live/src/sdk_live.rs::WaitReport", "crates/engine-live/src/sdk_live.rs::clear_ended_waits"]
+code = ["crates/engine-ports/src/live_view.rs::WaitReport", "crates/engine-live/src/sdk_live.rs::clear_ended_waits"]
 truth = ["file:wait.json"]
 ```
 
-- **Kind**: implicit. **Defined in**: `engine-live/src/sdk_live.rs:22-78`, `:755-761` (`EndedWaits`).
+- **Kind**: implicit. **Defined in**: `engine-ports/src/live_view.rs` (`WaitReport`, `read_wait_file`), `engine-live/src/sdk_live.rs` (`EndedWaits`).
 - **States**: absent → written by the node (`alondra report-wait`) → deleted on change of turn or execution
   (`clear_ended_waits`, in `published`, under the store lock) | ignored on read if its `pid` no longer exists.
 - Display only (`read_wait_file` says so: "never an input to admission or lifecycle decisions").
@@ -4485,7 +4485,7 @@ readers = ["crates/system/src/codex_account.rs"]
 machine = "M-PROV-12"
 [[file]]
 name = "options.pending"
-writer = "crates/daemon-engine-model/src/options.rs"
+writer = "crates/engine-ports/src/options.rs"
 readers = ["crates/alondrad/src/preflight.rs"]
 machine = "M-PROV-12"
 [[file]]
@@ -5971,7 +5971,7 @@ happens. The model test cannot show it: its orchestrator always ends a handled t
   2. In `dispatch_pending`, without `selection` the account is chosen with `choose_for_launch`, which tolerates broken
      options (`daemon-engine/src/accounts.rs:178-179`, `unwrap_or_default`); with a slot in the queue, `options_at(home)?`
      (`:415`) fails if `options.toml` cannot be parsed or `options.pending` exists
-     (`daemon-engine-model/src/options.rs:49-62`).
+     (`engine-ports/src/options.rs:49-62`).
   3. The execution is still Pending (not yet claimed) and is retried at every start.
   4. Other equally hard exits: non-ordinary errors of `ClaimScheduleLaunch` (`:466-470`), of `RecordScheduleLaunchHanded`
      (`:483-486`) and of the slot claim (`:667`). A storage error in `RecordScheduleLaunchHanded` brings the daemon down

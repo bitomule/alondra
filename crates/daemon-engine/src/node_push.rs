@@ -17,22 +17,8 @@ pub(crate) fn outbox_id(message: i64) -> String {
     format!("{OUTBOX_PREFIX}{message}")
 }
 
-/// Who sent a message to a node and when, ahead of its text: the node goes by the newest
-/// instruction of whoever directs it.
-pub fn stamped(from: &str, at: alondra_core::Millis, text: &str) -> String {
-    format!("[From {from} · {}] {text}", crate::usage_pause::clock_text(at, alondra_core::now_millis(), false))
-}
 
-/// The author a node reads for a message that a command of this kind of actor wrote.
-pub fn author_of(actor_kind: &str) -> String {
-    match actor_kind {
-        "user" => crate::domain_messages::user_name(),
-        "orchestrator" => "the orchestrator".into(),
-        _ => ALONDRA.into(),
-    }
-}
-
-pub use alondra_engine_ports::outbox::ALONDRA;
+pub use alondra_engine_ports::outbox::{ALONDRA, author_of, stamped};
 
 pub(crate) fn message_line(id: &str, text: &str, as_user: bool) -> String {
     serde_json::json!({"id": id, "text": text, "as_user": as_user}).to_string()

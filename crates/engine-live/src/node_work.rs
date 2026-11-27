@@ -5,22 +5,13 @@ use crate::node_reports::short_label;
 use alondra_view_model::RunOutcome;
 use alondra_core::{BackgroundItem, BackgroundKind, Millis};
 use serde::Deserialize;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 pub const STEPS_LIMIT: usize = 50;
 pub const FINISHED_LIMIT: usize = 5;
 pub const RUNNING_LIMIT: usize = 20;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum StepStatus {
-    Pending,
-    InProgress,
-    Completed,
-    Deleted,
-    #[serde(other)]
-    Unknown,
-}
+pub use alondra_engine_ports::live_view::{AgentRun, End, EndedTask, Step, StepStatus, WorkflowRun, workflow_agents};
 
 /// One entry of the task list as a `TaskCreate`, `TaskUpdate`, `TaskList` or `TodoWrite` call
 /// gave it; an update names only what changed.
@@ -32,49 +23,6 @@ pub struct StepIn {
     #[serde(default)]
     pub status: Option<StepStatus>,
     #[serde(default)]
-    pub active_form: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct AgentRun {
-    pub id: String,
-    pub description: String,
-    pub kind: Option<String>,
-    pub model: Option<String>,
-    pub started_at: Millis,
-    pub end: Option<End>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct WorkflowRun {
-    pub id: String,
-    pub name: String,
-    /// Where the workflow writes one transcript per agent it runs.
-    pub transcript_dir: Option<PathBuf>,
-    pub started_at: Millis,
-    pub end: Option<End>,
-}
-
-/// When something the node ran ended, and how, as the fact that ended it says.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct End {
-    pub at: Millis,
-    pub outcome: RunOutcome,
-}
-
-/// A shell or other background task that ended; subagents and workflows keep their end in their
-/// own run.
-#[derive(Clone, Debug, PartialEq)]
-pub struct EndedTask {
-    pub item: BackgroundItem,
-    pub end: End,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct Step {
-    pub id: String,
-    pub subject: String,
-    pub status: StepStatus,
     pub active_form: Option<String>,
 }
 
@@ -268,15 +216,6 @@ impl NodeWork {
     }
 }
 
-/// How many agents a workflow has started, by the transcripts it wrote; none when its folder
-/// cannot be read or holds none yet.
-pub fn workflow_agents(dir: &Path) -> Option<u32> {
-    let count = std::fs::read_dir(dir).ok()?
-        .filter_map(Result::ok)
-        .filter(|entry| entry.path().extension().is_some_and(|extension| extension == "jsonl"))
-        .count();
-    (count > 0).then(|| count.min(u32::MAX as usize) as u32)
-}
 
 #[cfg(test)]
 mod tests {
@@ -372,7 +311,7 @@ mod tests {
         assert_eq!(work.workflows[0].end.map(|end| end.at), None);
         work.listed(&[listed("t-9", "workflow", Some("review-loop"))], 3_000);
         assert_eq!(work.workflows.len(), 1, "a workflow listed under another id is the one already running by that name");
-        assert_eq!((work.workflows[0].id.as_str(), work.workflows[0].transcript_dir.as_deref()), ("t-9", Some(Path::new("/tmp/w1"))));
+        assert_eq!((work.workflows[0].id.as_str(), work.workflows[0].transcript_dir.as_deref()), ("t-9", Some(std::path::Path::new("/tmp/w1"))));
         work.listed(&[], 4_000);
         assert_eq!(work.workflows[0].end.map(|end| end.at), Some(4_000));
     }

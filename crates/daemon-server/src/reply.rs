@@ -17,6 +17,11 @@ impl Reply {
         Self { status: StatusCode::OK, body }
     }
 
+    /// What the engine answered, as `(status, body)`.
+    pub fn answered((status, body): (u16, Value)) -> Self {
+        Self { status: StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR), body }
+    }
+
     pub fn error(error: DomainError) -> Self {
         Self { status: status_for(&error), body: json!(error) }
     }
@@ -27,12 +32,6 @@ impl Reply {
 
     pub fn into_value(self) -> Value {
         json!({"status": self.status.as_u16(), "body": self.body})
-    }
-}
-
-impl From<alondra_daemon_engine::reply::Reply> for Reply {
-    fn from(reply: alondra_daemon_engine::reply::Reply) -> Self {
-        Self { status: reply.status, body: reply.body }
     }
 }
 

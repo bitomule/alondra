@@ -192,7 +192,7 @@ pub(crate) fn execute(
             let stamp = if lang == Lang::Es { "Specs actualizadas" } else { "Specs updated" };
             Ok(json!({"protocol":alondra_view_model::VIEWS_PROTOCOL,"outcome":"applied","stamp":stamp,"revision":outcome.revision}))
         }
-        Err(crate::domain_store::StoreError::Domain(error)) => Ok(rejected(lang, field_of(&edit), &error.message)),
-        Err(crate::domain_store::StoreError::Storage(error)) => Err(error.into()),
+        Err(alondra_engine_ports::journal::StoreError::Domain(error)) => Ok(rejected(lang, field_of(&edit), &error.message)),
+        Err(alondra_engine_ports::journal::StoreError::Storage(error)) => Err(error.into()),
     }
 }

@@ -12,10 +12,7 @@ use std::collections::BTreeSet;
 /// What one read of a pull request answered: which pull request and at which head, or why not.
 pub type Answer<'a> = Result<(Option<&'a ReadIdentity>, &'a str), &'a GhFailure>;
 
-/// A start time the domain accepts for a read beginning now.
-pub fn read_start() -> alondra_domain_model::Millis {
-    alondra_core::clock::now_millis().max(1)
-}
+pub use alondra_engine_ports::github::read_start;
 
 /// The branches the task of `pr` works on: a pull request from one of them is the task's own.
 pub fn task_branches(state: &DomainState, pr: &PullRequest) -> BTreeSet<String> {

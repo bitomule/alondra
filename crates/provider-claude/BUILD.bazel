@@ -34,7 +34,7 @@ adapter_out_crate(
     srcs = _PROVIDER_SOURCES,
     crate_name = "alondra_provider_claude",
     version = "0.1.0",
-    test_visibility = ["//crates/daemon-engine:__pkg__", "//crates/daemon-server:__pkg__", "//crates/engine-sdk:__pkg__"],
+    test_visibility = ["//crates/daemon-engine:__pkg__", "//crates/daemon-server:__pkg__", "//crates/engine-orchestrator:__pkg__", "//crates/engine-sdk:__pkg__"],
     deps = _PROVIDER_DEPS,
 )
 

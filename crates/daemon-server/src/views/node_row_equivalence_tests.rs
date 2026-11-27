@@ -1,4 +1,6 @@
 use super::*;
+use alondra_daemon_engine::live::LiveOf as _;
+use alondra_daemon_engine::contexts::ContextsOf as _;
 use alondra_domain_model::{Actor, AgentId, Command, CommandEnvelope, LaunchPlan, ReadSnapshot, PROTOCOL_VERSION};
 use serde_json::json;
 use std::sync::Arc;
@@ -61,7 +63,7 @@ impl Fixture {
 
     fn equivalent(&self, state: DomainState, agent: &str,
         launches: &BTreeMap<alondra_domain_model::RequestId, (Option<String>, Option<String>)>,
-        exhausted: &Option<crate::usage_pause::Exhausted>,
+        exhausted: &Option<alondra_engine_ports::orchestrator::Exhausted>,
     ) -> Vec<Option<LiveNode>> {
         let read = ReadSnapshot::build(Arc::new(state));
         let id: AgentId = agent.into();
@@ -205,7 +207,7 @@ fn indexed_node_rows_preserve_sdk_turn_and_pause_states() {
 fn reference_node_row(client: &crate::client_routes::Client, state: &DomainState,
     agent: &alondra_domain_model::Agent, lang: Lang,
     launches: &BTreeMap<alondra_domain_model::RequestId, (Option<String>, Option<String>)>,
-    exhausted: &Option<crate::usage_pause::Exhausted>, now: Millis) -> Option<LiveNode> {
+    exhausted: &Option<alondra_engine_ports::orchestrator::Exhausted>, now: Millis) -> Option<LiveNode> {
     let node_tasks = alondra_domain_model::NodeTasks::new(state);
     let session_id = agent.id.0.clone();
     let reported = client.domain.live().mods.session(&session_id).unwrap_or_default();
@@ -278,7 +280,7 @@ fn reference_node_row(client: &crate::client_routes::Client, state: &DomainState
             let lifecycle = state.lifecycle_of(&task.id).ok()?;
             alondra_daemon_engine::sdk_live::wait_file(&*client.domain, task.account_key().provider, lifecycle.execution()?.instance().as_str())
         })
-        .and_then(|path| alondra_daemon_engine::sdk_live::read_wait_file(&path))
+        .and_then(|path| alondra_engine_ports::live_view::read_wait_file(&path))
         .map(|wait| alondra_view_model::LiveReportedWait { what: wait.what, progress: wait.progress, detail: wait.detail, since: timestamp(wait.since_ms) });
     Some(LiveNode {
         agent_id: node.session_id,
@@ -340,7 +342,7 @@ fn reference_node_row(client: &crate::client_routes::Client, state: &DomainState
         last_message_at: last_message.map(|(_, at)| timestamp(at)),
         last_turn_aborted: answer.is_some_and(|answer| answer.aborted),
         tool: tool.map(|tool| tool.chars().take(141).collect()),
-        tool_since: reported.tool.as_ref().map(|tool| crate::usage_pause::clock_text(tool.since, now, lang == Lang::Es)),
+        tool_since: reported.tool.as_ref().map(|tool| alondra_engine_ports::usage::clock_text(tool.since, now, lang == Lang::Es)),
         context_percent: context.and_then(|(percent, _)| percent).map(|percent| percent.round().clamp(0.0, 999.0) as u32),
         context_window: context.and_then(|(_, window)| window),
         cost_cents: reported.sdk.as_ref().and_then(|readings| readings.cost_cents),

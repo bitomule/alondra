@@ -41,6 +41,7 @@ pub mod workflow_state;
 pub use alondra_engine_ports::disk;
 #[cfg(test)]
 pub use alondra_store_sqlite::domain_database_migration;
+#[cfg(test)]
 pub use alondra_daemon_engine::{
     accounts,
     antigravity_accounts,

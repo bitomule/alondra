@@ -11,6 +11,11 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// The route Settings reads and changes the accounts through.
+pub const PATH: &str = "/settings/accounts";
+/// Checks every account's sign-in now, as after the user signs one in.
+pub const CHECK: &str = "/settings/accounts/check";
+
 /// Whether a Codex probe goes on to read the account's models and usage once it knows who signed in.
 pub type Accept<'a> = Box<dyn FnOnce(&ProbeReport) -> bool + 'a>;
 

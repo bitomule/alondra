@@ -17,7 +17,7 @@ async fn repeated_card_requests() {
 
     let home = crate::test_support::Directory::new();
     std::fs::create_dir_all(&home).unwrap();
-    let database = crate::domain_store::active_path(&home);
+    let database = alondra_engine_ports::journal::active_path(&home);
     {
         let mut store = alondra_store_sqlite::DomainStore::open(&database, &alondra_domain_rules::Rules).unwrap();
         seed(&mut store, 20);
@@ -154,7 +154,7 @@ async fn trace_card_live_store_reads() {
     let home = crate::test_support::Directory::new();
     std::fs::create_dir_all(&home).unwrap();
     {
-        let database = crate::domain_store::active_path(&home);
+        let database = alondra_engine_ports::journal::active_path(&home);
         let mut store = alondra_store_sqlite::DomainStore::open(&database, &alondra_domain_rules::Rules).unwrap();
         seed(&mut store, 20);
     }

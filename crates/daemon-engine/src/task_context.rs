@@ -1,20 +1,9 @@
 use crate::domain_authority::Principal;
 use alondra_engine_ports::Runtime;
-use alondra_domain_model::{AgentId, DomainError, TaskId};
-use alondra_store::ContextRef;
-use serde::Deserialize;
+use alondra_domain_model::{AgentId, DomainError};
 use serde_json::Value;
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Query {
-    task_id: TaskId,
-    #[serde(default)]
-    after: Option<ContextRef>,
-    #[serde(default = "page_size")]
-    limit: usize,
-}
-fn page_size() -> usize { 32 }
+pub use alondra_engine_ports::domain_api::TaskContextQuery as Query;
 
 pub fn read(domain: &dyn Runtime, bearer: &str, query: Query) -> Result<Value, DomainError> {
     read_after_check(domain, bearer, query, || {})
@@ -40,6 +29,8 @@ fn read_after_check(domain: &dyn Runtime, bearer: &str, query: Query, after_chec
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alondra_domain_model::TaskId;
+    use alondra_store::ContextRef;
     use alondra_domain_model::*;
     use crate::test_support::Directory;
 

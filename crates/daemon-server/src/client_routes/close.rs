@@ -1,10 +1,9 @@
 //! The close route: closing a `claude --bg` session of an earlier release by hand, from the apps
 //! or the CLI. A node of the Agent SDK ends with its task.
-use alondra_daemon_engine::live::LiveOf as _;
 use crate::locks::Poisonable as _;
 use super::{Client, Reply};
-pub(crate) use crate::node_close::Answer;
-use crate::node_close::{CloseOutcome, Reason, Sessions, close_node};
+pub(crate) use alondra_engine_ports::node_close::Answer;
+use alondra_engine_ports::node_close::{CloseOutcome, Reason, Sessions};
 use alondra_domain_model::{AgentId, DomainError};
 use axum::http::StatusCode;
 use serde::Deserialize;
@@ -37,8 +36,8 @@ impl Client {
             return Ok(refused("This node runs through the Agent SDK and ends with its task: cancel its task to stop it", vec![]));
         }
         let sessions = self.sessions();
-        let name = self.domain.live().node(agent_id).and_then(|node| node.name.clone()).unwrap_or(known.name);
-        Ok(match close_node(&*self.domain, sessions.as_ref(), &agent, true).await? {
+        let name = self.api.live.node(&*self.domain, agent_id).and_then(|node| node.name.clone()).unwrap_or(known.name);
+        Ok(match self.api.runtime.close_node(&*self.domain, sessions.as_ref(), &agent, true).await? {
             CloseOutcome::Closed { output } => Reply::ok(json!({"ok": true, "interactive": false, "output": output})),
             CloseOutcome::NotListed => Reply::ok(json!({"ok": true, "interactive": true, "output": format!(
                 "{name} is an interactive session, not a background job: Alondra stopped tracking it and left the terminal session itself open. Close it there with /exit when you are done."

@@ -21,7 +21,7 @@ pub use context::{Cached, ContextEvent, context_event, sdk_message};
 pub use mcp::{mcp_traits, remove_arguments, settings_file, still_configured};
 pub use ended::{EndedJournal, Retained};
 pub use agent::{wire, Claude};
-pub use batch::{BatchHost, PendingHostEvent, HostEvent, McpServer, OrchestratorProfile};
+pub use batch::{BatchHost, Batches, HostEvent, McpServer, OrchestratorProfile, PendingHostEvent};
 pub use alondra_agent_protocol::{Execution, OrchestratorExecution, OrchestratorLane};
 pub use wire::HostOwner;
 pub use records::conversation_session;

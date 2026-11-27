@@ -1,7 +1,7 @@
-use alondra_daemon_engine::local_actions::LocalActionsOf as _;
+use alondra_engine_ports::local_actions::LocalActionsOf as _;
 use super::actions::{ActionRequest, execute};
 use alondra_view_model::action_outcome::{UnknownReason, in_progress_body, unknown_body};
-use alondra_daemon_engine::local_actions::RunningAction;
+use alondra_engine_ports::local_actions::RunningAction;
 use crate::auth::Signed;
 use alondra_engine_ports::Runtime;
 use anyhow::{Context, Result};
@@ -887,7 +887,7 @@ mod tests {
         let (state, base, server) = serve(home.clone()).await;
         let (_, body, path) = action(&state);
         let resource = state.domain().local_actions().resource(
-            alondra_daemon_engine::local_actions::LocalActionResource::NodeLimitSettings,
+            alondra_engine_ports::local_actions::LocalActionResource::NodeLimitSettings,
         );
         let held = resource.clone().write_owned().await;
         let first = tokio::spawn({

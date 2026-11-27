@@ -329,14 +329,7 @@ pub(crate) fn pr_url(pr: &alondra_domain_model::PullRequest) -> String {
     format!("https://{}/{}/pull/{}", pr.host, pr.repository, pr.number)
 }
 
-/// What the Agent of a conflicting PR is told, whether the user asked or Alondra noticed.
-pub fn conflicts_text(name: &str, pr: &alondra_domain_model::PullRequest, update: alondra_domain_model::BranchUpdate) -> String {
-    format!(
-        "{name} asks you to resolve the conflicts of {url} with {base}: {how}. When you finish, present the PR again with \
-         present_result and its new head. If you cannot resolve them, ask {name}.",
-        url = pr_url(pr), base = pr.base, how = update.instruction(&pr.base)
-    )
-}
+pub use alondra_engine_ports::outbox::conflicts_text;
 
 /// The same message relayed from a paired device, answered as a local response.
 pub async fn relayed(domain: &dyn Runtime, home: &Path, sender: &str, agent: AgentId, body: Option<&Value>) -> Result<Value, DomainError> {

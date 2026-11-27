@@ -1,3 +1,4 @@
+#[cfg(test)]
 use alondra_daemon_engine::live::LiveOf as _;
 use alondra_core::clock;
 use super::observation::{Observation, Metric};
@@ -123,8 +124,8 @@ pub(crate) fn start_clock(client: &Arc<crate::client_routes::Client>) {
         let Some(initial_client) = weak.upgrade() else { return };
         let mut domain_changes = initial_client.domain.subscribe_snapshots();
         let mut read = initial_client.domain.read();
-        let mut hook_changes = initial_client.domain.live().changed.subscribe();
-        let mut report_changes = initial_client.domain.live().mods.changed.subscribe();
+        let mut hook_changes = initial_client.api.live.hooks_changes(&*initial_client.domain);
+        let mut report_changes = initial_client.api.live.reports_changes(&*initial_client.domain);
         let observation = initial_client.view_observation.clone();
         drop(initial_client);
         let mut last = None;

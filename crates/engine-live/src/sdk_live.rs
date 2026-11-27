@@ -20,39 +20,7 @@ const SUMMARY_LIMIT: usize = 300;
 const REMEMBERED: usize = 50;
 const PROGRESS_TOOLS: [&str; 4] = ["TaskCreate", "TaskUpdate", "TaskList", "Workflow"];
 
-#[derive(Debug, Deserialize)]
-pub struct WaitReport {
-    pub what: String,
-    pub detail: Option<String>,
-    pub progress: Option<String>,
-    pub since_ms: Millis,
-    pid: Option<i32>,
-}
-
-/// A report is display text, never an input to admission or lifecycle decisions.
-pub fn read_wait_file(path: &std::path::Path) -> Option<WaitReport> {
-    use std::io::Read;
-    use std::os::unix::fs::OpenOptionsExt;
-    let file = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW).open(path).ok()?;
-    let metadata = file.metadata().ok()?;
-    if !metadata.is_file() || metadata.len() > 4096 { return None; }
-    let mut bytes = Vec::new();
-    file.take(4097).read_to_end(&mut bytes).ok()?;
-    if bytes.len() > 4096 { return None; }
-    let mut report: WaitReport = serde_json::from_slice(&bytes).ok()?;
-    if let Some(pid) = report.pid {
-        if pid <= 0 { return None; }
-        if unsafe { libc::kill(pid, 0) } != 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::EPERM) { return None; }
-    }
-    fn single_line(text: &str, limit: usize) -> String {
-        text.chars().map(|c| if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') { ' ' } else { c }).take(limit).collect::<String>().trim().into()
-    }
-    report.what = single_line(&report.what, 60);
-    if report.what.is_empty() { return None; }
-    report.progress = report.progress.map(|text| single_line(&text, 40)).filter(|text| !text.is_empty());
-    report.detail = report.detail.map(|text| single_line(&text, 120)).filter(|text| !text.is_empty());
-    Some(report)
-}
+pub use alondra_engine_ports::live_view::{WaitReport, read_wait_file};
 
 pub fn wait_file(domain: &dyn alondra_engine_ports::Runtime, provider: alondra_core::accounts::Provider, instance: &str) -> Option<std::path::PathBuf> {
     let (backend, _) = domain.sdk()?;

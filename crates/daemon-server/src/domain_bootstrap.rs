@@ -1,5 +1,5 @@
 //! Local HTTP bootstrap: the routes are the shared domain handlers.
-use alondra_daemon_engine::sdk_backend::SdkOf as _;
+#[cfg(test)]
 use alondra_daemon_engine::live::LiveOf as _;
 use alondra_core::clock;
 use crate::locks::Poisonable as _;
@@ -24,7 +24,7 @@ pub struct DomainDaemon {
     domain: Arc<dyn Runtime>,
     api: alondra_engine_ports::domain_api::DomainApi,
     home: PathBuf,
-    gauges: crate::machine::Gauges,
+    gauges: alondra_engine_ports::machine::Gauges,
     /// The one approval list the guard verifies against and the pairing routes extend.
     pub(crate) auth: Arc<crate::auth::Auth>,
     client: Arc<crate::client_routes::Client>,
@@ -35,7 +35,7 @@ pub struct DomainDaemon {
 }
 
 pub fn require_database(home: &Path) -> Result<()> {
-    let database = crate::domain_store::active_path(home);
+    let database = alondra_engine_ports::journal::active_path(home);
     let metadata = std::fs::symlink_metadata(&database).with_context(|| {
         format!("committed domain database missing: {}", database.display())
     })?;
@@ -54,7 +54,7 @@ impl DomainDaemon {
 
     pub fn over_shared(home: &Path, domain: Arc<dyn Runtime>) -> Result<Arc<Self>> {
         require_database(home)?;
-        let gauges = crate::machine::Gauges::default();
+        let gauges = alondra_engine_ports::machine::Gauges::default();
         Ok(Arc::new(Self {
             home: home.to_owned(),
             client: crate::client_routes::Client::open(domain.clone(), home, gauges.clone()),
@@ -100,7 +100,7 @@ impl DomainDaemon {
         self.domain.clone()
     }
 
-    pub fn gauges(&self) -> crate::machine::Gauges {
+    pub fn gauges(&self) -> alondra_engine_ports::machine::Gauges {
         self.gauges.clone()
     }
 
@@ -177,8 +177,8 @@ pub fn router(state: Arc<DomainDaemon>) -> Router {
         .route(crate::settings::PATH, get(settings_read).put(settings_write))
         .route(crate::settings::FOLDERS, get(settings_folders))
         .route(crate::settings::CONFIG, axum::routing::put(settings_config))
-        .route(crate::accounts::PATH, get(accounts_read).put(accounts_write))
-        .route(crate::accounts::CHECK, post(accounts_check))
+        .route(alondra_engine_ports::accounts::PATH, get(accounts_read).put(accounts_write))
+        .route(alondra_engine_ports::accounts::CHECK, post(accounts_check))
         .merge(crate::domain_api::routes())
         .merge(crate::views::routes::router())
         .merge(crate::notices::router())
@@ -330,7 +330,7 @@ async fn settings_read(
         return refused;
     }
     let relay = relay_on(&state);
-    match alondra_core::clock::spawn_blocking(move || crate::settings::read(&state.home, &crate::options::user_home(), relay)).await {
+    match alondra_core::clock::spawn_blocking(move || crate::settings::read(&state.home, &alondra_engine_ports::options::user_home(), relay)).await {
         Ok(reply) => reply.into_response(),
         Err(_) => storage(),
     }
@@ -350,7 +350,7 @@ async fn settings_folders(
     let Some(path) = crate::settings::folders_query(&path_and_query) else {
         return crate::domain_api::domain_error(DomainError::new("invalid_input", "invalid folders query"));
     };
-    match alondra_core::clock::spawn_blocking(move || crate::settings::folders(&crate::options::user_home(), path.as_deref())).await {
+    match alondra_core::clock::spawn_blocking(move || crate::settings::folders(&alondra_engine_ports::options::user_home(), path.as_deref())).await {
         Ok(reply) => reply.into_response(),
         Err(_) => storage(),
     }
@@ -371,7 +371,7 @@ async fn settings_write(
         return crate::domain_api::domain_error(DomainError::new("invalid_input", "invalid settings"));
     };
     let relay = relay_on(&state);
-    match alondra_core::clock::spawn_blocking(move || crate::settings::write(&state.home, &crate::options::user_home(), relay, &body, lang)).await {
+    match alondra_core::clock::spawn_blocking(move || crate::settings::write(&state.home, &alondra_engine_ports::options::user_home(), relay, &body, lang)).await {
         Ok(reply) => reply.into_response(),
         Err(_) => storage(),
     }
@@ -399,9 +399,9 @@ async fn accounts_read(
         Ok(lang) => lang,
         Err(refused) => return refused,
     };
-    let (domain, home) = (state.domain(), state.home.clone());
-    match alondra_core::clock::spawn_blocking(move || crate::accounts::read(&*domain, &home, lang)).await {
-        Ok(reply) => crate::reply::Reply::from(crate::accounts::for_client(reply, query.provider_accounts())).into_response(),
+    let (domain, api, home) = (state.domain(), state.api.clone(), state.home.clone());
+    match alondra_core::clock::spawn_blocking(move || api.accounts.read(&*domain, &home, lang, query.provider_accounts())).await {
+        Ok(answer) => crate::reply::Reply::answered(answer).into_response(),
         Err(_) => storage(),
     }
 }
@@ -421,9 +421,9 @@ async fn accounts_write(
     let Ok(Json(body)) = body else {
         return crate::domain_api::domain_error(DomainError::new("invalid_input", "invalid accounts"));
     };
-    let (domain, home) = (state.domain(), state.home.clone());
-    match alondra_core::clock::spawn_blocking(move || crate::accounts::write(&*domain, &home, &body, lang)).await {
-        Ok(reply) => crate::reply::Reply::from(crate::accounts::for_client(reply, query.provider_accounts())).into_response(),
+    let (domain, api, home) = (state.domain(), state.api.clone(), state.home.clone());
+    match alondra_core::clock::spawn_blocking(move || api.accounts.write(&*domain, &home, &body, lang, query.provider_accounts())).await {
+        Ok(answer) => crate::reply::Reply::answered(answer).into_response(),
         Err(_) => storage(),
     }
 }
@@ -439,12 +439,12 @@ async fn accounts_check(
         Ok(lang) => lang,
         Err(refused) => return refused,
     };
-    let (domain, home) = (state.domain(), state.home.clone());
+    let (domain, api, home) = (state.domain(), state.api.clone(), state.home.clone());
     match alondra_core::clock::spawn_blocking(move || {
-        crate::accounts::check_now(&*domain, &home);
-        crate::accounts::read(&*domain, &home, lang)
+        api.accounts.check_now(&*domain, &home);
+        api.accounts.read(&*domain, &home, lang, query.provider_accounts())
     }).await {
-        Ok(reply) => crate::reply::Reply::from(crate::accounts::for_client(reply, query.provider_accounts())).into_response(),
+        Ok(answer) => crate::reply::Reply::answered(answer).into_response(),
         Err(_) => storage(),
     }
 }
@@ -531,7 +531,7 @@ async fn daemon(
     };
     Json(
         json!({"version": env!("CARGO_PKG_VERSION"),
-        "home": state.home, "sandbox": state.domain.live().sandbox.load(std::sync::atomic::Ordering::Relaxed),
+        "home": state.home, "sandbox": state.api.live.sandbox(&*state.domain),
         "views_protocol": crate::views::this_service().views_protocol,
         "update":crate::updates::status(&state.home),
         "preflight_rejected": crate::relaunch::rejected(), "supervised": crate::relaunch::under_launchd(),
@@ -721,7 +721,7 @@ async fn sdk_handover(
         return refused;
     }
     let (domain, api) = (state.domain(), state.api.clone());
-    match alondra_core::clock::spawn_blocking(move || api.sdk.handover_rows(&*domain).map(|rows| (domain.sdk().is_some(), rows))).await {
+    match alondra_core::clock::spawn_blocking(move || api.sdk.handover_rows(&*domain).map(|rows| (api.runtime.sdk_enabled(&*domain), rows))).await {
         Ok(Ok((backend, rows))) => Json(json!({"sdk_backend": backend, "tasks": rows})).into_response(),
         _ => crate::domain_api::domain_error(DomainError::new("storage_unavailable", "the tasks in progress could not be read")),
     }
@@ -773,9 +773,9 @@ async fn cleanup(
         return crate::domain_api::domain_error(DomainError::new("invalid_input", "invalid cleanup request"));
     };
     let sessions = state.client().sessions();
-    match crate::cleanup::run(&*state.domain, sessions.as_ref(), &crate::watcher::claude_home(), body.dry_run, alondra_core::now_millis(), crate::cleanup::STOP_WAIT).await {
+    match state.api.runtime.cleanup(&*state.domain, sessions.as_ref(), &crate::watcher::claude_home(), body.dry_run, alondra_core::now_millis()).await {
         Ok(report) => Json(report).into_response(),
-        Err((status, error)) => (status, Json(json!({"error": error}))).into_response(),
+        Err((status, error)) => (StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR), Json(json!({"error": error}))).into_response(),
     }
 }
 
@@ -835,31 +835,19 @@ async fn agent_message(
     State(state): State<Arc<DomainDaemon>>,
     signed: Option<Extension<Signed>>,
     RoutePath(id): RoutePath<String>,
-    body: Result<Json<crate::domain_messages::MessageBody>, JsonRejection>,
+    body: Result<Json<Value>, JsonRejection>,
 ) -> Response {
     let Some(device) = signed_device(&state.home, &signed) else {
         return forbidden("signed user device required");
     };
-    let Ok(Json(body)) = body else {
-        return crate::domain_api::domain_error(DomainError::new(
-            "invalid_input",
-            "invalid message",
-        ));
-    };
+    let invalid = || crate::domain_api::domain_error(DomainError::new("invalid_input", "invalid message"));
+    let Ok(Json(body)) = body else { return invalid() };
     let user = alondra_domain_model::Actor::User {
         user_id: format!("device:{}", device.device_id),
     };
-    match crate::domain_messages::deliver(
-        &*state.domain,
-        &state.home,
-        &user,
-        &crate::domain_messages::user_name(),
-        &id.into(),
-        body,
-        true,
-    )
-    .await
-    {
+    let (name, agent) = (alondra_core::config::user_name(), id.into());
+    let Some(delivery) = state.api.messages.deliver(&*state.domain, &state.home, &user, &name, &agent, body, true) else { return invalid() };
+    match delivery.await {
         Ok(answer) => Json(answer).into_response(),
         Err(error) => crate::domain_api::domain_error(error),
     }
@@ -899,13 +887,14 @@ async fn orchestrator_decision(
 
 /// Shared adapter used by `/agents/{id}/messages` and the views action dispatcher.
 pub(crate) async fn send_agent_message(
+    api: &alondra_engine_ports::domain_api::DomainApi,
     domain: &dyn Runtime,
     home: &Path,
     sender: &str,
     agent: &alondra_domain_model::AgentId,
     body: Value,
 ) -> Value {
-    crate::reply::Reply::answer(crate::domain_messages::relayed(domain, home, sender, agent.clone(), Some(&body)).await).into_value()
+    crate::reply::Reply::answer(api.messages.relayed(domain, home, sender, agent.clone(), Some(&body)).await).into_value()
 }
 
 /// Shared adapter used by explicit orchestrator routes and the views action dispatcher.
@@ -933,7 +922,7 @@ fn tool_caller(
         .get("authorization")
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "));
-    crate::domain_orchestrator_tools::orchestrator(&*state.domain, bearer, what)
+    state.api.tools.orchestrator(&*state.domain, bearer, what)
         .map_err(crate::domain_api::domain_error)
 }
 
@@ -972,8 +961,8 @@ async fn orchestrator_read(
     let Ok(Json(query)) = body else { return crate::domain_api::domain_error(DomainError::new("invalid_input", "Invalid bounded read request")); };
     let home = state.home.clone();
     let result = state.api.runtime.work(&*state.domain, Lane::Read).run(move || {
-        let options = crate::options::options_at(&home).map_err(|_| DomainError::new("invalid_input", "Project settings could not be read"))?;
-        let root = options.projects_root(&crate::options::user_home());
+        let options = alondra_engine_ports::options::options_at(&home).map_err(|_| DomainError::new("invalid_input", "Project settings could not be read"))?;
+        let root = options.projects_root(&alondra_engine_ports::options::user_home());
         crate::scoped_reads::execute(&root, query).map_err(|error| DomainError::new("read_unavailable", format!("{error}")))
     }).await;
     tool_answer(result.unwrap_or_else(|_| Err(DomainError::new("storage_unavailable", "The bounded read stopped before returning a result"))))
@@ -1020,7 +1009,7 @@ async fn read_task_context(
     State(state): State<Arc<DomainDaemon>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
-    body: Result<Json<crate::task_context::Query>, JsonRejection>,
+    body: Result<Json<alondra_engine_ports::domain_api::TaskContextQuery>, JsonRejection>,
 ) -> Response {
     if let Some(refused) = local_only(&peer, &headers) { return refused; }
     let Some(bearer) = headers.get("authorization").and_then(|value| value.to_str().ok()).and_then(|value| value.strip_prefix("Bearer ")) else {
@@ -1028,8 +1017,8 @@ async fn read_task_context(
     };
     let bearer = bearer.to_owned();
     let Ok(Json(query)) = body else { return crate::domain_api::domain_error(DomainError::new("invalid_input", "Invalid task context page")); };
-    let domain = state.domain();
-    let result = state.api.runtime.work(&*state.domain, Lane::Read).run(move || crate::task_context::read(&*domain, &bearer, query)).await;
+    let (domain, api) = (state.domain(), state.api.clone());
+    let result = state.api.runtime.work(&*state.domain, Lane::Read).run(move || api.tools.task_context(&*domain, &bearer, query)).await;
     tool_answer(result.unwrap_or_else(|_| Err(DomainError::new("storage_unavailable", "The task context could not be read"))))
 }
 
@@ -1049,7 +1038,7 @@ async fn request_plan_mode(
     let result = state.api.runtime.work(&*state.domain, Lane::Command).run(move || api.runtime.request_plan_mode(&*domain,&bearer,&query.task_id,&operation)).await;
     match result {
         Ok(Ok(_)) => Json(json!({"pending":true,"instruction":"End this turn now. Alondra applies plan mode before the next turn. Produce the full checklist plan in native planning mode and wait for Alondra approval before implementation."})).into_response(),
-        Ok(Err(crate::domain_store::StoreError::Domain(error))) => crate::domain_api::domain_error(error),
+        Ok(Err(alondra_engine_ports::journal::StoreError::Domain(error))) => crate::domain_api::domain_error(error),
         _ => storage(),
     }
 }
@@ -1061,7 +1050,7 @@ async fn tracked_tool(
     let bearer = headers.get("authorization").and_then(|value| value.to_str().ok()).and_then(|value| value.strip_prefix("Bearer "))
         .ok_or_else(|| DomainError::new("forbidden","The orchestrator capability is required"))?;
     let identity = headers.get("x-alondra-mcp-operation").and_then(|value| value.to_str().ok());
-    crate::domain_runtime::batch_operations::execute(state.domain(),bearer,identity,kind,request,work).await
+    state.api.tools.tracked(state.domain(), bearer.to_owned(), identity.map(str::to_owned), kind, request, Box::pin(work)).await
 }
 
 async fn orchestrator_launch(
@@ -1070,13 +1059,7 @@ async fn orchestrator_launch(
 ) -> Response {
     if let Err(refused) = tool_caller(&state,&peer,&headers,None) { return refused; }
     let Ok(Json(request)) = body else { return crate::domain_api::domain_error(DomainError::new("invalid_input","Invalid launch")); };
-    let body = match serde_json::from_value(request.clone()) { Ok(body) => body, Err(_) => return crate::domain_api::domain_error(DomainError::new("invalid_input","Invalid launch")) };
-    let domain = state.domain();
-    let home = state.home.clone();
-    let work = async move {
-        let choices_domain = Arc::clone(&domain);
-        crate::domain_orchestrator_tools::launch_replacing(domain,home,body,move |request| crate::domain_orchestrator_tools::request_choices(&*choices_domain,request).ok().flatten()).await
-    };
+    let Ok(work) = state.api.tools.launch(state.domain(), state.home.clone(), &request) else { return crate::domain_api::domain_error(DomainError::new("invalid_input","Invalid launch")) };
     tool_answer(tracked_tool(&state,&headers,"launch",request,work).await)
 }
 
@@ -1086,9 +1069,7 @@ async fn orchestrator_launch_plan(
 ) -> Response {
     if let Err(refused) = tool_caller(&state,&peer,&headers,None) { return refused; }
     let Ok(Json(request)) = body else { return crate::domain_api::domain_error(DomainError::new("invalid_input","Invalid launch plan")); };
-    let body = match serde_json::from_value(request.clone()) { Ok(body) => body, Err(_) => return crate::domain_api::domain_error(DomainError::new("invalid_input","Invalid launch plan")) };
-    let domain = state.domain(); let home = state.home.clone();
-    let work = async move { crate::domain_orchestrator_tools::set_launch_plan(&*domain,&home,body) };
+    let Ok(work) = state.api.tools.set_launch_plan(state.domain(), state.home.clone(), &request) else { return crate::domain_api::domain_error(DomainError::new("invalid_input","Invalid launch plan")) };
     tool_answer(tracked_tool(&state,&headers,"set_launch_plan",request,work).await)
 }
 
@@ -1103,7 +1084,7 @@ async fn orchestrator_get_launch_plan(
     Query(query): Query<LaunchPlanQuery>,
 ) -> Response {
     if let Err(refused) = tool_caller(&state, &peer, &headers, None) { return refused; }
-    tool_answer(crate::domain_orchestrator_tools::get_launch_plan(&*state.domain, &query.task_id))
+    tool_answer(state.api.tools.get_launch_plan(&*state.domain, &query.task_id))
 }
 
 async fn orchestrator_update_launch_plan(
@@ -1112,12 +1093,10 @@ async fn orchestrator_update_launch_plan(
 ) -> Response {
     if let Err(refused) = tool_caller(&state, &peer, &headers, None) { return refused; }
     let Ok(Json(request)) = body else { return crate::domain_api::domain_error(DomainError::new("invalid_input", "Invalid launch-plan changes")); };
-    let body = match serde_json::from_value(request.clone()) {
-        Ok(body) => body,
+    let work = match state.api.tools.update_launch_plan(state.domain(), state.home.clone(), &request) {
+        Ok(work) => work,
         Err(error) => return crate::domain_api::domain_error(DomainError::new("invalid_input", format!("Invalid launch-plan changes: {error}"))),
     };
-    let domain = state.domain(); let home = state.home.clone();
-    let work = async move { crate::domain_orchestrator_tools::update_launch_plan(&*domain, &home, body) };
     tool_answer(tracked_tool(&state, &headers, "update_launch_plan", request, work).await)
 }
 
@@ -1127,9 +1106,7 @@ async fn orchestrator_send(
 ) -> Response {
     let actor = match tool_caller(&state,&peer,&headers,None) { Ok(actor) => actor, Err(refused) => return refused };
     let Ok(Json(request)) = body else { return crate::domain_api::domain_error(DomainError::new("invalid_input","Invalid message")); };
-    let body = match serde_json::from_value(request.clone()) { Ok(body) => body, Err(_) => return crate::domain_api::domain_error(DomainError::new("invalid_input","Invalid message")) };
-    let domain = state.domain(); let home = state.home.clone();
-    let work = async move { crate::domain_orchestrator_tools::send(&*domain,&home,&actor,body).await };
+    let Ok(work) = state.api.tools.send(state.domain(), state.home.clone(), actor, &request) else { return crate::domain_api::domain_error(DomainError::new("invalid_input","Invalid message")) };
     tool_answer(tracked_tool(&state,&headers,"send",request,work).await)
 }
 
@@ -1140,15 +1117,16 @@ async fn sandbox_interrupt(
     headers: HeaderMap,
     axum::extract::Path(session): axum::extract::Path<String>,
 ) -> Response {
-    if !state.domain.live().sandbox.load(std::sync::atomic::Ordering::Relaxed) {
+    if !state.api.live.sandbox(&*state.domain) {
         return StatusCode::NOT_FOUND.into_response();
     }
     if let Some(refused) = local_only(&peer, &headers) {
         return refused;
     }
-    match state.domain.live().pushes.interrupt(&session) {
-        Ok(()) => Json(json!({"interrupted": session})).into_response(),
-        Err(_) => crate::domain_api::domain_error(DomainError::new("session_unreachable", "no connection from that session")),
+    if state.api.live.interrupt(&*state.domain, &session) {
+        Json(json!({"interrupted": session})).into_response()
+    } else {
+        crate::domain_api::domain_error(DomainError::new("session_unreachable", "no connection from that session"))
     }
 }
 
@@ -1158,9 +1136,7 @@ async fn orchestrator_interrupt(
 ) -> Response {
     if let Err(refused) = tool_caller(&state,&peer,&headers,None) { return refused; }
     let Ok(Json(request)) = body else { return crate::domain_api::domain_error(DomainError::new("invalid_input","Invalid interrupt")); };
-    let body = match serde_json::from_value(request.clone()) { Ok(body) => body, Err(_) => return crate::domain_api::domain_error(DomainError::new("invalid_input","Invalid interrupt")) };
-    let domain = state.domain();
-    let work = async move { crate::domain_orchestrator_tools::interrupt(&*domain,body) };
+    let Ok(work) = state.api.tools.interrupt(state.domain(), &request) else { return crate::domain_api::domain_error(DomainError::new("invalid_input","Invalid interrupt")) };
     tool_answer(tracked_tool(&state,&headers,"interrupt",request,work).await)
 }
 
@@ -1202,7 +1178,7 @@ async fn orchestrator_tasks_in_progress(
         return refused;
     }
     let (machine, usage) = gauges_json(&state);
-    tool_answer(crate::domain_orchestrator_reads::tasks_in_progress(
+    tool_answer(state.api.tools.tasks_in_progress(
         &*state.domain,
         machine,
         usage,
@@ -1223,7 +1199,7 @@ async fn orchestrator_node(
     if let Err(refused) = tool_caller(&state, &peer, &headers, None) {
         return refused;
     }
-    tool_answer(crate::domain_orchestrator_reads::node(
+    tool_answer(state.api.tools.node(
         &*state.domain,
         &query.node,
     ))
@@ -1263,12 +1239,11 @@ async fn agent_waiting_machine(
             "invalid reason",
         ));
     };
-    let live = state.domain.live();
-    let turn = live.node(&session_id).map_or(0, |node| node.turn);
+    let turn = state.api.live.node(&*state.domain, &session_id).map_or(0, |node| node.turn);
     let now = alondra_core::now_millis();
     state.api.admission.declare_machine_wait(&*state.domain, &session_id, body.resource, &body.reason, turn, now);
     state.domain.gate().hold_back(&session_id, alondra_engine_ports::admission::Reason::Declared { reason: body.reason.clone() }, now);
-    live.apply(&alondra_core::Event::WaitingMachine {
+    state.api.live.apply(&*state.domain, &alondra_core::Event::WaitingMachine {
         session_id,
         reason: body.reason,
     });
@@ -2000,7 +1975,7 @@ mod tests {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
         alondra_store_sqlite::load_bench::seed(&mut alondra_store_sqlite::DomainStore::open(
-            &crate::domain_store::active_path(&home), &alondra_domain_rules::Rules).unwrap(), 20);
+            &alondra_engine_ports::journal::active_path(&home), &alondra_domain_rules::Rules).unwrap(), 20);
         let auth = Auth::open(&home).unwrap();
         let key = SigningKey::from_slice(&[9u8; 32]).unwrap();
         let pairing = auth.new_pairing_code();

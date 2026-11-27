@@ -18,7 +18,7 @@ pub(crate) const FOLDERS: &str = "/settings/folders";
 /// The `config.toml` keys `alondra config set` changes; only this Mac's own CLI reaches it.
 pub(crate) const CONFIG: &str = "/settings/config";
 
-pub(crate) use alondra_daemon_engine::settings_file::{WRITER, replace};
+pub(crate) use alondra_engine_ports::settings_file::{WRITER, replace};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -46,7 +46,7 @@ pub(crate) fn approved_read(path_and_query: &str) -> bool {
 }
 
 pub(crate) fn read(home: &Path, user_home: &Path, relay_on: bool) -> Reply {
-    let loaded = crate::options::load_in(home, &Mutex::new(None));
+    let loaded = alondra_engine_ports::options::load_in(home, &Mutex::new(None));
     let root = loaded.file.projects_root(user_home);
     Reply {
         status: StatusCode::OK,
@@ -105,7 +105,7 @@ pub(crate) fn write_config(home: &Path, worktrees: &dyn alondra_engine_ports::wo
     let _writing = WRITER.lock_or_recover("the settings writer");
     if change.key == "worktrees_root" {
         let result = (|| -> Result<(), String> {
-            let text = crate::options::read_options(home)?.unwrap_or_default();
+            let text = alondra_engine_ports::options::read_options(home)?.unwrap_or_default();
             alondra_core::options::OptionsFile::parse(&text)?;
             let root = change.value.as_deref().map(|value| worktrees.capture_root(Path::new(value))).transpose()?;
             let written = alondra_core::options::with_worktrees_root(&text, root.as_ref())?;

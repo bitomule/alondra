@@ -9,7 +9,7 @@ use alondra_domain_model::{
 use alondra_core::pr::Check;
 use alondra_view_model::{LiveCheck, LivePullRequest};
 use alondra_view_model::pr_images::{PrImage, Shown};
-use crate::pr_images::GitHubImages;
+use alondra_engine_ports::github::GitHubImages;
 use crate::views::observation::{Observation as ViewObservation, Metric};
 use serde::Serialize;
 use serde_json::Value;
@@ -66,13 +66,13 @@ impl<G: alondra_engine_ports::github::Gh + Send + Sync + ?Sized + 'static> PrVie
 
 struct PrViewObserver(Arc<dyn PrView>);
 
-impl crate::domain_github::PrObserver for PrViewObserver {
-    fn observe<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> crate::domain_github::Observed<'a> {
+impl alondra_engine_ports::github::PrObserver for PrViewObserver {
+    fn observe<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> alondra_engine_ports::github::Observed<'a> {
         Box::pin(async move {
-            let url = crate::domain_github::pr_url(host, repository, number);
+            let url = alondra_engine_ports::github::pr_url(host, repository, number);
             let answer = self.0.view(&url).await
-                .ok_or_else(|| crate::domain_github::GhFailure::Unreadable("GitHub did not report the pull request".to_owned()))?;
-            alondra_engine_ports::github::pr_facts(&answer).map_err(crate::domain_github::GhFailure::Unreadable)
+                .ok_or_else(|| alondra_engine_ports::github::GhFailure::Unreadable("GitHub did not report the pull request".to_owned()))?;
+            alondra_engine_ports::github::pr_facts(&answer).map_err(alondra_engine_ports::github::GhFailure::Unreadable)
         })
     }
 }
@@ -258,16 +258,16 @@ impl PrDetails {
     /// The images of `body`, a description of `pr` at `head` read by request `read`, kept for the
     /// clients: a description read after the details shows in their place until they read it too.
     async fn bring_for(&self, pr: &PullRequest, body: &str, head: &str, read: u64, github: &dyn GitHubImages, home: &std::path::Path) -> Vec<PrImage> {
-        let target = crate::pr_images::Target { host: &pr.host, repository: &pr.repository, number: pr.number, head };
+        let target = alondra_engine_ports::pr_images::Target { host: &pr.host, repository: &pr.repository, number: pr.number, head };
         let known: BTreeMap<String, Shown> = {
             let cache = self.cache.lock_or_recover("the pull request details");
             let images = cache.entries.get(&pr.id.0).and_then(|entry| entry.images.as_ref());
             if let Some(images) = images.filter(|images| images.body == body && images.head == head && !images.retry && images.read >= read) {
                 return images.brought.clone();
             }
-            images.map(|images| crate::pr_images::lasting(&target, &images.brought, images.head == head)).unwrap_or_default()
+            images.map(|images| alondra_engine_ports::pr_images::lasting(&target, &images.brought, images.head == head)).unwrap_or_default()
         };
-        let brought = crate::pr_images::bring(github, home, &target, body, &known).await;
+        let brought = alondra_engine_ports::pr_images::bring(github, home, &target, body, &known).await;
         let mut cache = self.cache.lock_or_recover("the pull request details");
         let Some(entry) = cache.entries.get_mut(&pr.id.0) else { return brought.images };
         if entry.images.as_ref().is_some_and(|images| images.read > read) {
@@ -327,7 +327,7 @@ impl PrDetails {
             loop {
                 let Some(pr) = pending.lock_or_recover("the pull request refresh").next() else { break };
                 let request = self.begin(&pr.id.0);
-                let url = crate::domain_github::pr_url(&pr.host, &pr.repository, pr.number);
+                let url = alondra_engine_ports::github::pr_url(&pr.host, &pr.repository, pr.number);
                 if let Some(view) = source.view(&url).await {
                     self.complete(&pr.id.0, request, parse(&pr.id.0, pr.number, &view));
                 }
@@ -352,11 +352,11 @@ impl super::Client {
         given.unwrap_or_else(|| Arc::new(ViaGh(self.github_port().reads)))
     }
 
-    pub fn use_pr_merger(&self, github: Arc<dyn alondra_daemon_engine::domain_merges::PrMerger>) {
+    pub fn use_pr_merger(&self, github: Arc<dyn alondra_engine_ports::github::PrMerger>) {
         *self.pr_merger.lock_or_recover("the pull request merger") = Some(github);
     }
 
-    pub(crate) fn pr_merger(&self) -> Arc<dyn alondra_daemon_engine::domain_merges::PrMerger> {
+    pub(crate) fn pr_merger(&self) -> Arc<dyn alondra_engine_ports::github::PrMerger> {
         let given = self.pr_merger.lock_or_recover("the pull request merger").clone();
         given.unwrap_or_else(|| self.github_port().merger)
     }
@@ -379,7 +379,7 @@ impl super::Client {
     /// the description may have changed a moment ago.
     async fn missing_images(&self, pr: &PullRequest) -> Vec<PrImage> {
         let view = self.pr_view();
-        let url = crate::domain_github::pr_url(&pr.host, &pr.repository, pr.number);
+        let url = alondra_engine_ports::github::pr_url(&pr.host, &pr.repository, pr.number);
         let read = self.details.begin(&pr.id.0);
         let Some(answer) = view.view(&url).await else { return vec![] };
         let fresh = parse(&pr.id.0, pr.number, &answer);
@@ -401,7 +401,7 @@ impl super::Client {
             return Merge::Clean;
         }
         let view = self.pr_view();
-        let url = crate::domain_github::pr_url(&pr.host, &pr.repository, pr.number);
+        let url = alondra_engine_ports::github::pr_url(&pr.host, &pr.repository, pr.number);
         for attempt in 0..attempts {
             if attempt > 0 {
                 alondra_core::clock::sleep(pause).await;
@@ -450,7 +450,7 @@ impl super::Client {
             }
             if let Some(github) = self.domain.ports().port::<alondra_engine_ports::github::GitHub>() {
                 if let Ok(verdict) = github.merger.verdict(pr).await {
-                    let _ = alondra_daemon_engine::domain_verdicts::record(&*self.domain, pr, verdict);
+                    let _ = self.api.pull_requests.record_verdict(&*self.domain, pr, verdict);
                 }
             }
         }
@@ -466,7 +466,7 @@ impl super::Client {
         let source = PrViewObserver(self.pr_view());
         let github = self.domain.ports().port::<alondra_engine_ports::github::GitHub>()
             .ok_or_else(|| DomainError::new("github_unreachable", "Alondra has no GitHub to confirm the task's pull requests"))?;
-        if let Err(error) = crate::domain_github::catch_up_task_using(&*self.domain, &github, &source, task_id, *is_final).await {
+        if let Err(error) = self.api.pull_requests.catch_up_task(&*self.domain, &github, &source, task_id, *is_final).await {
             log!("could not read the PRs of {task_id} from GitHub: {error:#}");
             return Err(DomainError::new("github_unreachable", "GitHub could not confirm the task's pull requests: present the result again when it answers"));
         }
@@ -484,7 +484,7 @@ impl super::Client {
         let mut heads = std::collections::BTreeMap::new();
         let Some(task) = state.tasks.get(task) else { return heads };
         for pr in state.open_prs(task) {
-            let url = crate::domain_github::pr_url(&pr.host, &pr.repository, pr.number);
+            let url = alondra_engine_ports::github::pr_url(&pr.host, &pr.repository, pr.number);
             let Some(facts) = view.view(&url).await.and_then(|answer| alondra_engine_ports::github::pr_facts(&answer).ok()) else { continue };
             let (Some(tip), Ok(default_branch)) = (facts.base_head, merger.default_branch(pr).await) else { continue };
             heads.insert(pr.id.clone(), alondra_engine_ports::spec_reading::GitHubBase { branch: facts.base, tip, default_branch });
@@ -505,13 +505,13 @@ impl super::Client {
             if head.is_empty() || *head == pr.head {
                 continue;
             }
-            let url = crate::domain_github::pr_url(&pr.host, &pr.repository, pr.number);
+            let url = alondra_engine_ports::github::pr_url(&pr.host, &pr.repository, pr.number);
             for attempt in 0..HEAD_ATTEMPTS {
                 if attempt > 0 {
                     alondra_core::clock::sleep(HEAD_PAUSE).await;
                 }
                 let Some(facts) = view.view(&url).await.and_then(|answer| alondra_engine_ports::github::pr_facts(&answer).ok()) else { continue };
-                if let Err(error) = crate::domain_github::observe(&*self.domain, pr_id, &facts) {
+                if let Err(error) = self.api.pull_requests.observe(&*self.domain, pr_id, &facts) {
                     log!("could not record what GitHub reports of {}: {error}", pr.id);
                     return;
                 }
@@ -529,14 +529,14 @@ const HEAD_ATTEMPTS: usize = 3;
 const HEAD_PAUSE: Duration = if cfg!(test) { Duration::ZERO } else { Duration::from_secs(2) };
 
 fn presentation_conflicts_text(pr: &PullRequest, update: alondra_domain_model::BranchUpdate) -> String {
-    let url = crate::domain_github::pr_url(&pr.host, &pr.repository, pr.number);
+    let url = alondra_engine_ports::github::pr_url(&pr.host, &pr.repository, pr.number);
     let base = &pr.base;
     format!("GitHub reports that {url} conflicts with {base}, so nothing was presented: {how}, then present the PR again \
         with present_result and its new head. If you cannot resolve them, ask the user.", how = update.instruction(base))
 }
 
 fn missing_images_text(pr: &PullRequest, missing: &[PrImage]) -> String {
-    let url = crate::domain_github::pr_url(&pr.host, &pr.repository, pr.number);
+    let url = alondra_engine_ports::github::pr_url(&pr.host, &pr.repository, pr.number);
     let mut each: Vec<String> = missing.iter().map(|image| match &image.shown {
         Shown::Unavailable { problem, .. } => format!("{} ({})", image.url, problem.text(alondra_view_model::Lang::En)),
         Shown::Stored { .. } => image.url.clone(),
@@ -573,7 +573,7 @@ pub(crate) fn hand_back_conflicts(domain: &dyn alondra_engine_ports::Runtime, de
                 attachments: vec![],
                 presentation_id: presentation.id.clone(),
                 targets: targets.clone(),
-                body: crate::domain_messages::conflicts_text(name, pr, state.branch_update),
+                body: alondra_engine_ports::outbox::conflicts_text(name, pr, state.branch_update),
                 instruction: Instruction::Conflicts,
                 merge_failure: None,
             },
@@ -877,7 +877,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_presented_pr_whose_description_cites_an_image_missing_from_the_branch_is_refused_naming_it() {
-        use crate::pr_images::fake::{FakeGitHub, PNG};
+        use alondra_engine_ports::pr_images::fake::{FakeGitHub, PNG};
         let (_home, client, pr) = foreground_fixture();
         let view = std::sync::Arc::new(super::FakePrView::default());
         let answer = |body: &str| json!({

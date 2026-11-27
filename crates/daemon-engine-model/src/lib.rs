@@ -3,7 +3,7 @@
 #[path = "../../test_support.rs"]
 mod test_support;
 
-use alondra_foundation::{locks, save};
+use alondra_foundation::save;
 
 mod account;
 mod account_identity;
@@ -12,11 +12,11 @@ mod state;
 
 pub mod claude_trust;
 pub mod faults;
-pub mod issues;
-pub mod options;
+pub use alondra_engine_ports::issues;
+pub use alondra_engine_ports::options;
 pub mod reply;
 pub mod retention;
-pub mod settings_file;
+pub use alondra_engine_ports::settings_file;
 
 pub use account::{account_of, local_day};
 pub use account_identity::NativeAccountIdentity;
