@@ -40,7 +40,8 @@ public struct CardDetailFeature: Sendable {
         public var contentPending: Bool { contentDigest != nil && content == nil && !contentFailed }
         public var markdown: String { content ?? "" }
         public var blocks: [MarkdownBlock] { MarkdownParser.blocks(from: markdown) }
-        public var feedback: [ActionComment] { blocks.compactMap { comments[$0.anchor] } }
+        public var sheetAnchors: [SheetAnchor] { screen.document?.sheetAnchors ?? [] }
+        public var feedback: [ActionComment] { blocks.compactMap { comments[$0.anchor] } + sheetAnchors.compactMap { comments[$0.id] } }
         public var canComment: Bool { subject?.allActions.contains { $0.comments?.kind == .blocks } == true }
         public var hasFeedback: Bool {
             !comments.isEmpty || !reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
