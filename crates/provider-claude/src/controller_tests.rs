@@ -188,7 +188,7 @@ fn raw_normalizer_commits_initial_trigger_once_and_preserves_followup_fifo() {
     std::fs::create_dir_all(&*directory).unwrap();
     let path = directory.join("domain.db");
     let connection = Connection::open(&path).unwrap();
-    connection.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+    connection.execute_batch("PRAGMA foreign_keys=ON; PRAGMA synchronous=OFF").unwrap();
     connection
         .execute_batch(include_str!("../../domain-store-schema/schema.sql"))
         .unwrap();
@@ -242,7 +242,7 @@ fn raw_normalizer_commits_initial_trigger_once_and_preserves_followup_fifo() {
     assert_eq!(active.activity(), ActivityView::Working);
     assert!(active.pending_inputs().is_empty());
     let raw = Connection::open(&path).unwrap();
-    raw.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+    raw.execute_batch("PRAGMA foreign_keys=ON; PRAGMA synchronous=OFF").unwrap();
     // These cards exercise the existing raw store fixture, not the missing ReadIndex app seam.
     for business in ["second", "third"] {
         raw.execute("INSERT INTO interactions(id,scope_kind,task_id,author_kind,recipient_kind,body,blocking,kind,revision,ordering,options,withdrawn,card) VALUES(?1,'task','task','system','user','What next?',1,'question',0,0,'[{\"id\":\"answer\",\"label\":\"Answer\"}]',0,'{\"kind\":\"provide\",\"need\":\"Your decision\"}')", [business]).unwrap();
@@ -385,7 +385,7 @@ fn native_commands_without_input_metadata_do_not_poison_observation_commits() {
     std::fs::create_dir_all(&*directory).unwrap();
     let path = directory.join("domain.db");
     let connection = Connection::open(&path).unwrap();
-    connection.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+    connection.execute_batch("PRAGMA foreign_keys=ON; PRAGMA synchronous=OFF").unwrap();
     connection
         .execute_batch(include_str!("../../domain-store-schema/schema.sql"))
         .unwrap();

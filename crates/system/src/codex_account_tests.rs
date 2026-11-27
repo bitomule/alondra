@@ -2,6 +2,37 @@ use super::*;
 use alondra_core::accounts::AccountId;
 use crate::test_support::Directory;
 
+/// The clock of every probe here. It never moves, so a probe waits for its fixture however long a
+/// busy Mac takes to start it; `late` is the clock that runs out.
+fn held() -> Instant {
+    static AT: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    *AT.get_or_init(Instant::now)
+}
+
+/// A clock on which more than the probe's patience passes between any two readings.
+fn late() -> Instant {
+    static READINGS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    held() + (PROBE_TIMEOUT + Duration::from_secs(1)) * READINGS.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+}
+
+/// The developer directory's own python3, which the test wrapper names: `/usr/bin/python3` is an
+/// Xcode shim that first runs `xcodebuild` for every new HOME, which each fixture here is.
+fn python() -> PathBuf {
+    std::env::var_os("ALONDRA_TEST_PYTHON").map_or_else(|| "/usr/bin/python3".into(), PathBuf::from)
+}
+
+fn probe(command: Command, account: AccountKey, now: alondra_foundation::Millis) -> Result<ProbeReport, String> {
+    probe_with_diagnostics(held, command, account, now, |_| true, false)
+}
+
+fn probe_matching(command: Command, account: AccountKey, now: alondra_foundation::Millis, accept_account: impl FnOnce(&ProbeReport) -> bool) -> Result<ProbeReport, String> {
+    probe_with_diagnostics(held, command, account, now, accept_account, false)
+}
+
+fn probe_fixture(command: Command, account: AccountKey, now: alondra_foundation::Millis) -> Result<ProbeReport, String> {
+    probe_with_diagnostics(held, command, account, now, |_| true, true)
+}
+
 struct RetainedThreadFixture {
     _root: Directory,
     executable: PathBuf,
@@ -18,8 +49,7 @@ impl RetainedThreadFixture {
         let directory = root.join("repo");
         fs::create_dir_all(&directory).unwrap();
         let executable = root.join("native.py");
-        fs::write(&executable, r#"#!/usr/bin/python3
-import json, os, sys
+        fs::write(&executable, format!("#!{}\n", python().display()) + r#"import json, os, sys
 for line in sys.stdin:
     request = json.loads(line)
     with open(os.environ['THREAD_FIXTURE_TRACE'], 'a') as trace: trace.write(json.dumps(request) + '\n')
@@ -50,7 +80,7 @@ for line in sys.stdin:
     fn record(&self) -> Value { json!({"thread":{"id":"retained-thread", "cwd":self.directory, "path":self.rollout}}) }
     fn check(&self, record: &Value) -> Result<bool, String> {
         fs::write(&self.metadata, serde_json::to_vec(record).unwrap()).unwrap();
-        retained_thread(&self.executable, &self.environment, "retained-thread", &self.directory)
+        retained_thread_on(held, &self.executable, &self.environment, "retained-thread", &self.directory)
     }
 }
 
@@ -115,6 +145,17 @@ fn a_named_account_cannot_redirect_credentials_through_a_symlink() {
     assert_eq!(fs::read_dir(outside).unwrap().count(), 0);
 }
 
+/// A Mac too busy for Codex to answer in time, played by the clock: Codex answers at once, but
+/// more than the probe's patience passed on the probe's clock, so the answer is not taken.
+#[test]
+fn a_probe_gives_up_once_its_patience_runs_out_on_its_clock() {
+    let scratch = Directory::new(); fs::create_dir_all(&*scratch).unwrap(); let fixture = scratch.join("native.py");
+    fs::write(&fixture, "import sys,json\nfor raw in sys.stdin:\n m=json.loads(raw)\n if 'id' in m: print(json.dumps({'id':m['id'],'result':{}}),flush=True)\n").unwrap();
+    let mut command = Command::new(python()); command.arg(&fixture).env_clear().env("HOME", &*scratch).envs(crate::test_support::xcrun_cache());
+    let refused = probe_with_diagnostics(late, command, AccountKey::native(Provider::Codex), 0, |_| true, false).unwrap_err();
+    assert_eq!(refused, "Codex probe did not answer in time");
+}
+
 #[test]
 fn account_probe_uses_native_catalog_without_running_a_turn() {
     let scratch = Directory::new();
@@ -135,7 +176,7 @@ for raw in sys.stdin:
  else: raise RuntimeError('Unexpected method: '+method)
  print(json.dumps({'id':m['id'],'result':result}),flush=True)
 "#).unwrap();
-    let mut command = Command::new("/usr/bin/python3");
+    let mut command = Command::new(python());
     command.arg(fixture).env_clear().env("HOME", &*scratch).envs(crate::test_support::xcrun_cache());
     let report = probe(command, AccountKey::native(Provider::Codex), 123).unwrap();
     assert!(report.signed_in);
@@ -167,7 +208,7 @@ for raw in sys.stdin:
  print(json.dumps({'id':m['id'],'result':result}),flush=True)
 "#).unwrap();
     for method in ["chatgpt", "apikey", "chatgptAuthTokens", "agentIdentity", "unknown", "apikey-cached", "signedout"] {
-        let mut command = Command::new("/usr/bin/python3"); command.arg(&fixture).arg(method).env_clear().env("HOME", &*scratch).envs(crate::test_support::xcrun_cache());
+        let mut command = Command::new(python()); command.arg(&fixture).arg(method).env_clear().env("HOME", &*scratch).envs(crate::test_support::xcrun_cache());
         let report = probe(command, AccountKey::native(Provider::Codex), 10).unwrap();
         assert_eq!(report.signed_in, method != "signedout", "native account metadata and Alondra support are separate facts");
         assert_eq!(report.supported_authentication(), matches!(method, "chatgpt" | "apikey"));
@@ -200,7 +241,7 @@ for raw in sys.stdin:
  print(json.dumps({'id':m['id'],'result':result}),flush=True)
 "#).unwrap();
     for mode in ["identity-only", "catalog-error"] {
-        let mut command = Command::new("/usr/bin/python3"); command.arg(&fixture).arg(mode).env_clear().env("HOME", &*scratch).envs(crate::test_support::xcrun_cache());
+        let mut command = Command::new(python()); command.arg(&fixture).arg(mode).env_clear().env("HOME", &*scratch).envs(crate::test_support::xcrun_cache());
         let report = probe_matching(command, AccountKey::native(Provider::Codex), 10, |_| mode == "catalog-error").unwrap();
         assert!(report.signed_in); assert_eq!(report.native_identity().as_deref(), Some("replacement-workspace"));
         assert!(report.catalog.models.is_empty()); assert!(report.catalog.revision.is_empty(), "an unobserved catalog cannot be published as an empty advertisement");
@@ -220,7 +261,7 @@ for raw in sys.stdin:
  else: answer={'error':{'code':-32602,'message':'Fixture base URL requires HTTPS','data':{'accessToken':'never-print-error-data'}}}
  print(json.dumps(dict(id=m['id'],**answer)),flush=True)
 "#).unwrap();
-    let command = || { let mut command = Command::new("/usr/bin/python3"); command.arg(&fixture).env_clear().env("HOME", &*scratch).envs(crate::test_support::xcrun_cache()); command };
+    let command = || { let mut command = Command::new(python()); command.arg(&fixture).env_clear().env("HOME", &*scratch).envs(crate::test_support::xcrun_cache()); command };
     assert_eq!(probe(command(), AccountKey::native(Provider::Codex), 0).unwrap_err(), "Codex refused account/read");
     let error = probe_fixture(command(), AccountKey::native(Provider::Codex), 0).unwrap_err();
     assert!(error.contains("native RPC -32602: Fixture base URL requires HTTPS")); assert!(!error.contains("never-print-error-data") && !error.contains("accessToken"));
@@ -246,7 +287,7 @@ for raw in sys.stdin:
  print(json.dumps({'id':m['id'],'result':result}),flush=True)
 "#).unwrap();
     for mode in ["unavailable", "unknown", "false", "true"] {
-        let mut command = Command::new("/usr/bin/python3"); command.arg(&fixture).arg(mode).env_clear().env("HOME", &*scratch).envs(crate::test_support::xcrun_cache());
+        let mut command = Command::new(python()); command.arg(&fixture).arg(mode).env_clear().env("HOME", &*scratch).envs(crate::test_support::xcrun_cache());
         let report = probe(command, AccountKey::native(Provider::Codex), 1).unwrap();
         assert!(report.signed_in && report.supported_authentication()); assert_eq!(report.email.as_deref(), Some("first@example.test"));
         assert_eq!(report.catalog.native_default.as_deref(), Some("fixture-model")); assert_eq!(report.catalog.models.len(), 1);
