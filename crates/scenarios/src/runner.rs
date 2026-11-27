@@ -853,8 +853,8 @@ impl Context<'_> {
             Step::NodeEnd { task } => {
                 self.command(index, Actor::System, Command::RecordNodeEnd { task_id: task.clone().into(), end: NodeEnd::Closed, agent_id: Some(agent_of(task).into()) })?;
             }
-            Step::Restart { lose } => self.restart(index, lose, None).await?,
-            Step::Update => self.restart(index, &[], Some(alondra_engine_sdk::sdk_owner::backend::this_release())).await?,
+            Step::Restart { lose, full_disk } => self.restart(index, lose, full_disk, None).await?,
+            Step::Update => self.restart(index, &[], &[], Some(alondra_engine_sdk::sdk_owner::backend::this_release())).await?,
             Step::HostCanStart { task } => self.edge(index)?.set_startable(task, true),
             Step::WriteHome { files } => {
                 for file in files {
@@ -1259,8 +1259,9 @@ impl Context<'_> {
     /// The daemon stops as a crash stops it: its loops end and its owners let go of their hosts
     /// without stopping them, which run on. A daemon starts over the same home, of `release` when
     /// an update installs one (its hosts are files of their own), and takes the hosts over. The
-    /// hosts of `lose` die with the first daemon, and no new one can start for their tasks.
-    async fn restart(&mut self, index: usize, lose: &[String], release: Option<String>) -> Result<(), ScenarioError> {
+    /// hosts of `lose` die with the first daemon, and no new one can start for their tasks; those of
+    /// `full_disk` die leaving their last event in their journal twice.
+    async fn restart(&mut self, index: usize, lose: &[String], full_disk: &[String], release: Option<String>) -> Result<(), ScenarioError> {
         if let Some(old) = self.daemon.take() {
             old.tasks.abort();
             let domain = old.domain.clone();
@@ -1272,6 +1273,9 @@ impl Context<'_> {
         }
         for task in lose {
             let edge = self.edge(index)?;
+            if full_disk.contains(task) {
+                edge.kill_on_a_full_disk(task);
+            }
             edge.kill(task);
             edge.set_startable(task, false);
         }

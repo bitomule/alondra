@@ -60,6 +60,7 @@ task = "t1"
 [[step]]
 do = "restart"
 lose = ["t1"]
+full_disk = ["t1"]
 
 [[step]]
 do = "update"
@@ -68,7 +69,7 @@ do = "update"
     .unwrap();
     assert!(matches!(&scenario.steps[0], Step::ProviderDown { error, status: Some(529), tasks, .. } if error == "server_error" && tasks.is_empty()));
     assert!(matches!(&scenario.steps[2], Step::LoginExpired { account } if account == "default"));
-    assert!(matches!(&scenario.steps[4], Step::Restart { lose } if lose == &["t1"]));
+    assert!(matches!(&scenario.steps[4], Step::Restart { lose, full_disk } if lose == &["t1"] && full_disk == &["t1"]));
     assert!(matches!(scenario.steps[5], Step::Update));
 }
 

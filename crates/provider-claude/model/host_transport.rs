@@ -284,6 +284,19 @@ impl Wire {
         Ok(())
     }
 
+    /// What a full disk left in the journal of a host on 27 November: the write of its next event
+    /// landed but failed, so the host never counted it and journaled its exit under the same
+    /// cursor. Neither goes on the lane.
+    pub fn journal_twice(&mut self, bootstrap: &Bootstrap, landed: Value) -> Result<(), String> {
+        for observation in [landed, json!({"type": "process_exited", "exit_code": 143, "signal": null})] {
+            let frame = json!({"protocol_version": PROTOCOL_VERSION, "body": {"type": "event", "fence": bootstrap.fence, "execution": bootstrap.execution,
+                "cursor": self.cursor + 1, "observation": observation}});
+            let frame: Frame = serde_json::from_value(frame).map_err(|error| format!("the host wrote an event that is not a frame: {error}"))?;
+            self.keep(&frame)?;
+        }
+        Ok(())
+    }
+
     /// Sends again the receipt of a command the host answered already: a copy gets the same one.
     pub fn answered_before(&mut self, command: &Command) -> bool {
         let Some(receipt) = self.receipts.get(&command.command_id.to_string()).cloned() else { return false };

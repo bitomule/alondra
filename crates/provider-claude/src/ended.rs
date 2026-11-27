@@ -1,6 +1,8 @@
 //! What the journal of a host that ended proves, read without changing it. The host appends and
 //! fsyncs each command, receipt and event before it acts on it, so the durable journal is the
-//! host's own evidence; a frame cut short at its end is a write that never completed.
+//! host's own evidence; a frame cut short at its end is a write that never completed. A cursor
+//! written twice or skipped is a write that failed after its bytes landed (a full disk): the host
+//! never counted it, so nothing from there on is evidence, and what the host did after is uncertain.
 use alondra_agent_protocol::{Body, Execution, Fence, FramedReader, ReceiptOutcome, ReceiptPhase};
 use alondra_provider_contract::AdapterError;
 pub use alondra_engine_ports::agent_workers::{Retained, RetainedEvent};
@@ -27,6 +29,7 @@ impl EndedJournal {
             Err(_) => return Err(AdapterError::Disconnected),
         };
         let mut reader = FramedReader::new(std::io::BufReader::new(file));
+        let mut read_cursor = None;
         loop {
             let received = match reader.read_received() {
                 Ok(Some(received)) => received,
@@ -66,12 +69,18 @@ impl EndedJournal {
                     }
                     entry.1 = Some(receipt.outcome.clone());
                 }
-                Body::Event(event) if event.cursor > committed => {
-                    if event.cursor != journal.last_cursor + 1 {
-                        return Err(AdapterError::InvalidObservation);
+                Body::Event(event) => {
+                    let broken = read_cursor.is_some_and(|read| event.cursor != read + 1)
+                        || (event.cursor > committed && event.cursor != journal.last_cursor + 1);
+                    if broken {
+                        journal.uncertain = true;
+                        break;
                     }
-                    journal.last_cursor = event.cursor;
-                    journal.events.push(RetainedEvent { cursor: event.cursor, payload: received.payload().to_vec() });
+                    read_cursor = Some(event.cursor);
+                    if event.cursor > committed {
+                        journal.last_cursor = event.cursor;
+                        journal.events.push(RetainedEvent { cursor: event.cursor, payload: received.payload().to_vec() });
+                    }
                 }
                 _ => {}
             }

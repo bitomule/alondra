@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { Journal } from './journal.js';
-import { parsePayload, commandDigest, PROTOCOL_VERSION } from './frame.js';
+import { encode, parsePayload, commandDigest, PROTOCOL_VERSION } from './frame.js';
 const fixture = (name) => readFileSync(join(process.env.TEST_SRCDIR, process.env.TEST_WORKSPACE, 'crates/agent-protocol/fixtures', `${name}.json`));
 const original = fixture('start');
 const start = parsePayload(original);
@@ -54,5 +54,36 @@ try {
     next.close(); next = new Journal(continued, validate, 4);
     assert.equal(next.cursor, 5, 'replay continues from the same base');
   } finally { next.close(); rmSync(continued, { recursive: true, force: true }); }
+  // 27 November: the disk filled and a write of event 465 landed but its fsync failed. The host
+  // never counted that event and wrote its exit under cursor 465 too, and no daemon could read the
+  // journal again. A write that fails leaves the journal taking nothing more, whatever of it landed.
+  for (const landed of [1, 0.5]) {
+    const full = mkdtempSync(join(process.env.TEST_TMPDIR, 'journal-full-'));
+    let failing = false;
+    const write = (fd, bytes) => {
+      appendFileSync(fd, failing ? bytes.subarray(0, Math.floor(bytes.length * landed)) : bytes);
+      if (failing) throw Object.assign(new Error('ENOSPC: no space left on device, fsync'), { code: 'ENOSPC' });
+    };
+    const damaged = new Journal(full, validate, 0, {}, write);
+    try {
+      damaged.append(frame({ type: 'attached', ...identity, owner_generation: 1, proof: '0'.repeat(64) }));
+      damaged.append(frame({ ...event.body, cursor: 1 }));
+      failing = true;
+      assert.throws(() => damaged.append(frame({ ...event.body, cursor: 2 })), /ENOSPC/);
+      failing = false;
+      assert.equal(damaged.cursor, 1, 'the event whose write failed is not counted');
+      assert.throws(() => damaged.append(frame({ ...event.body, cursor: 2 })), /failed before/, 'nothing follows a write whose end is unknown');
+      assert.throws(() => damaged.append(frame({ type: 'acknowledge', ...identity, owner_generation: 1, cursor: 1 })), /failed before/);
+      const raw = readFileSync(damaged.path); const cursors = []; let offset = 0;
+      while (raw.length - offset >= 4 && raw.length - offset - 4 >= raw.readUInt32BE(offset)) {
+        const length = raw.readUInt32BE(offset);
+        const body = parsePayload(raw.subarray(offset + 4, offset + 4 + length)).body;
+        if (body.type === 'event') cursors.push(body.cursor);
+        offset += 4 + length;
+      }
+      assert.deepEqual(cursors, landed === 1 ? [1, 2] : [1], 'no cursor is written twice');
+      assert.equal(raw.length - offset, landed === 1 ? 0 : Math.floor(encode(frame({ ...event.body, cursor: 2 })).length * landed), 'only the cut write is left at its end');
+    } finally { damaged.close(); rmSync(full, { recursive: true, force: true }); }
+  }
   console.log('Technical journal retains exact command and uncertainty; ACK only releases persisted observations');
 } finally { journal?.close(); rmSync(root, { recursive: true, force: true }); }

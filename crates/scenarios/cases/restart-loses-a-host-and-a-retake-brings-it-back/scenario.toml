@@ -1,4 +1,4 @@
-name = "a restart that loses a node's host asks the user, and trying again starts a host that resumes the same session"
+name = "a restart that loses a node's host, its journal left with an event twice by a full disk, asks the user, and trying again starts a host that resumes the same session"
 max_virtual = "1h"
 
 [[step]]
@@ -18,6 +18,7 @@ max = "5m"
 [[step]]
 do = "restart"
 lose = ["t1"]
+full_disk = ["t1"]
 
 [[step]]
 do = "rest"

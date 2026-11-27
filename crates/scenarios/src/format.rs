@@ -216,8 +216,9 @@ pub enum Step {
     NodeEnd { task: String },
     /// The daemon goes as a crash takes it and starts again over the same home: the SDK hosts
     /// run on, and the new daemon takes them over. The hosts of the tasks of `lose` die with it,
-    /// and no new host can start for those tasks until `host_can_start`.
-    Restart { #[serde(default)] lose: Vec<String> },
+    /// and no new host can start for those tasks until `host_can_start`. Those of them also in
+    /// `full_disk` die as a full disk left one: their journal ends with their last event twice.
+    Restart { #[serde(default)] lose: Vec<String>, #[serde(default)] full_disk: Vec<String> },
     /// The daemon is replaced by this release, which installs its own host: the hosts the older
     /// release started run on, and the new daemon takes them over or refuses them.
     Update,
