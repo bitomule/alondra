@@ -116,7 +116,7 @@ public struct CardDetailView: View {
                 ForEach(subject.sections, id: \.id) { section in
                     sectionView(section)
                 }
-                if store.canComment, store.content != nil || store.contentPending { commentsSummary }
+                if store.canComment, store.content != nil || store.contentPending || !store.sheetAnchors.isEmpty { commentsSummary }
             }
             .padding(.horizontal, 20).padding(.bottom, 24)
         }
@@ -143,7 +143,7 @@ public struct CardDetailView: View {
             }
             .font(.footnote).foregroundStyle(.secondary)
             BlockChips(blocks: subject.card?.blocks ?? [], blockedBy: subject.card?.blockedBy ?? [], open: follow)
-            if store.canComment, store.content != nil {
+            if store.canComment, store.content != nil || !store.sheetAnchors.isEmpty {
                 Label("Tap a block to comment on it", systemImage: "hand.tap")
                     .font(.footnote.weight(.medium)).foregroundStyle(kind.tint).padding(.top, 4)
             }
@@ -160,6 +160,8 @@ public struct CardDetailView: View {
                     PRDescription(markdown: markdown)
                 } else if section.id == "documents", case .facts(let facts) = item {
                     DocumentLinks(facts: facts, tint: kind.tint, open: follow)
+                } else if section.id == "specs", case .actions(let bar) = item {
+                    ActionBarView(bar: bar, onAction: { store.send(.actionTapped($0)) }, onLink: follow)
                 } else {
                     itemView(item)
                 }
@@ -190,9 +192,21 @@ public struct CardDetailView: View {
             TimelineView(timeline: timeline)
         case .unsupported:
             UnsupportedItemView()
+        case .specSheet(let sheet):
+            SpecSheetView(sheet: sheet).environment(\.sheetHandlers, sheetHandlers)
+        case .decisionSheet(let sheet):
+            DecisionSheetView(sheet: sheet).environment(\.sheetHandlers, sheetHandlers)
         case .card, .form, .actions:
             EmptyView()
         }
+    }
+
+    private var sheetHandlers: SheetHandlers {
+        SheetHandlers(
+            onLink: follow, onAction: { store.send(.actionTapped($0)) },
+            onComment: store.canComment ? { store.send(.blockTapped(anchor: $0.id, quote: $0.quote)) } : nil,
+            commented: Set(store.comments.keys)
+        )
     }
 
     @ViewBuilder private func contentReference(_ reference: ContentRef) -> some View {
@@ -279,6 +293,19 @@ public struct CardDetailView: View {
             if store.feedback.isEmpty {
                 Text("You haven’t commented on any block yet.")
                     .font(.subheadline).foregroundStyle(.secondary)
+            }
+            ForEach(store.sheetAnchors.filter { store.comments[$0.id] != nil }, id: \.id) { anchor in
+                Button { store.send(.blockTapped(anchor: anchor.id, quote: anchor.quote)) } label: {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("“\(ReviewFeedback.quote(anchor.quote))”")
+                            .font(.footnote.italic()).foregroundStyle(.secondary).lineLimit(3)
+                        Text(store.comments[anchor.id]?.text ?? "")
+                            .font(.subheadline).foregroundStyle(Palette.ink)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(14)
+                    .background(Palette.card, in: .rect(cornerRadius: 14))
+                }
+                .buttonStyle(.plain)
             }
             ForEach(store.blocks.filter { store.comments[$0.anchor] != nil }) { block in
                 Button { store.send(.blockTapped(anchor: block.anchor, quote: block.plainText)) } label: {

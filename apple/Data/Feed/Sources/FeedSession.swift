@@ -29,7 +29,7 @@ public actor FeedSession {
     private let client: ViewClient
     private let lang: String
     private var capabilities: [String] = []
-    private static let implementedCapabilities: Set<String> = ["account_presentation", "model_selection", "provider_accounts"]
+    private static let implementedCapabilities: Set<String> = ["account_presentation", "model_selection", "provider_accounts", "spec_fields"]
     private var leases: [UUID: String] = [:]
     private var versions: [String: String] = [:]
     private var documents: [String: ViewDocument] = [:]

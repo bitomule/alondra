@@ -34,6 +34,7 @@ swift_test(
         "//apple/Testing/Snapshots:Support/AssertAppSnapshot.swift",
         "//apple/Testing/Fixtures:RequestedFormCard.swift",
         "//apple/Testing/Fixtures:SpanishTestData.swift",
+        "//apple/Testing/Fixtures:SpecSheetFixtures.swift",
     ],
     data = glob(["Tests/__Snapshots__/**"], allow_empty = True) + [
         "//apple:macOS/Resources/Localizable.xcstrings",

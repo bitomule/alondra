@@ -32,6 +32,8 @@ public struct ActionFeature: Sendable {
         /// each send, the moment it is tapped, without waiting for the Mac.
         public var sends = 0
         public var error: String?
+        /// The field the daemon refused, with what it said: shown beside the field, not at the end.
+        public var fieldError: FieldError?
         public var changed: ChangedNotice?
         /// The last request that went out and got no answer. Sending the same again reuses its
         /// command, so the Mac does it once even if the first one did arrive.
@@ -114,6 +116,12 @@ public struct ActionFeature: Sendable {
         }
     }
 
+    public struct FieldError: Equatable, Sendable {
+        public let field: String
+        public let message: String
+        public init(field: String, message: String) { self.field = field; self.message = message }
+    }
+
     /// What the server says moved while the person looked, and the action that goes on anyway.
     public struct ChangedNotice: Equatable, Sendable {
         public let title: String
@@ -153,6 +161,8 @@ public struct ActionFeature: Sendable {
         /// what it shows; an answer to an earlier one is only reported.
         case answered(ActionRequest, ActionResponse)
         case failed(String)
+        /// The daemon refused what was sent and said which field it is about: the form shows it beside that field.
+        case fieldRejected(field: String, message: String)
         /// The request got no answer from the daemon, for the reason given.
         case undelivered(ActionRequest, SendFailure)
         case dismiss
@@ -197,7 +207,7 @@ public struct ActionFeature: Sendable {
                 state.comments = []; state.fields = [:]; state.modelFields = []; state.modelFormAvailable = true; state.formReplacement = nil; state.confirmation = nil
                 state.requestedForm = nil; state.content = [:]
                 state.pending = nil; state.inFlight = false; state.stamp = nil
-                state.error = nil; state.changed = nil; state.stalled = false
+                state.error = nil; state.fieldError = nil; state.changed = nil; state.stalled = false
                 state.pendingAttachmentSubmit = false
                 state.attachmentPicker = AttachmentFeature.State()
                 return .none
@@ -208,7 +218,7 @@ public struct ActionFeature: Sendable {
                 state.comments = []; state.fields = fields; state.modelFields = modelFields; state.modelFormAvailable = true; state.formReplacement = nil; state.confirmation = nil
                 state.requestedForm = nil; state.content = [:]
                 state.pending = nil; state.inFlight = false; state.stamp = nil
-                state.error = nil; state.changed = nil; state.stalled = false
+                state.error = nil; state.fieldError = nil; state.changed = nil; state.stalled = false
                 state.pendingAttachmentSubmit = false
                 state.requiresAttachments = value.attachments || requiresAttachments
                 state.attachmentPicker = AttachmentFeature.State()
@@ -240,6 +250,7 @@ public struct ActionFeature: Sendable {
                 state.requestedForm = form; state.content = content; state.error = nil
                 return .none
             case .fieldsChanged(var fields):
+                state.fieldError = nil
                 if fields["model"] != state.fields["model"] {
                     if fields["reasoning_effort"] != nil { fields["reasoning_effort"] = .string("auto") }
                     if fields["allow_model_substitution"] != nil, state.fields["substitution_was_edited"] != .bool(true) { fields["allow_model_substitution"] = .bool(fields["model"] == .string("auto")); fields["substitution_was_edited"] = .bool(false) }
@@ -319,6 +330,9 @@ public struct ActionFeature: Sendable {
                 state.pending = nil
                 state.unsure = nil
                 return .merge(stall, respond(reply, style, &state))
+            case let .fieldRejected(field, message):
+                if field.isEmpty { state.error = message } else { state.fieldError = FieldError(field: field, message: message) }
+                return .none
             case let .failed(message):
                 state.inFlight = false
                 state.stamp = nil
@@ -382,7 +396,8 @@ public struct ActionFeature: Sendable {
             return .none
         case .failure(let message):
             state.stamp = nil
-            state.error = message
+            state.fieldError = reply.field.flatMap { $0.isEmpty ? nil : FieldError(field: $0, message: reply.message ?? message) }
+            state.error = state.fieldError == nil ? message : nil
             return .send(.delegate(.failed(message)))
         }
     }

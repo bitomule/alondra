@@ -25,6 +25,8 @@ public struct ViewsScreenFeature: Sendable {
         public var pickerLoading = false
         public var pickerError: String?
         public var action: ActionFeature.State
+        /// What the person edited in the specs of a plan that the Mac has not confirmed yet, shared by every screen of them.
+        @Shared(.inMemory("specEdits")) public var specEdits = SpecEdits()
 
         public var hasInlineForm: Bool {
             ["new_request", "schedule:", "task_selection:", "model_profile:"].contains { key.rawValue.hasPrefix($0) }
@@ -57,11 +59,14 @@ public struct ViewsScreenFeature: Sendable {
         case pickerOpened(String, String), pickerQueryChanged(String), pickerLoaded(ViewFetch), pickerFailed(String)
         case pickerSelected(String), pickerClosed
         case action(ActionFeature.Action)
+        /// The person tapped a part of a plan's specs: its form opens over this screen.
+        case editSpec(String)
+        case specEditOverdue(String)
     }
 
     @Dependency(\.viewsClient) var viewsClient
     @Dependency(\.continuousClock) var clock
-    private enum CancelID { case load, picker }
+    private enum CancelID: Hashable { case load, picker, specEdit(String) }
 
     public var body: some ReducerOf<Self> {
         Scope(state: \.action, action: \.action) { ActionFeature() }
@@ -157,6 +162,7 @@ public struct ViewsScreenFeature: Sendable {
             case .loaded(.document(let document)):
                 guard document.key == state.key.rawValue else { return .none }
                 state.document = document
+                state.$specEdits.withLock { $0.reconcile(document.version) }
                 let sameEpoch = state.action.dataEpoch == document.dataEpoch
                 state.action.dataEpoch = document.dataEpoch
                 if let updated = document.sections.lazy.flatMap(\.items).compactMap({ item -> WireForm? in
@@ -218,6 +224,36 @@ public struct ViewsScreenFeature: Sendable {
             case .dismissError:
                 state.error = nil
                 return .none
+            case .editSpec(let key):
+                return .run { [viewsClient] send in
+                    do {
+                        guard case let .document(document) = try await viewsClient.load(ViewKey(rawValue: key), nil),
+                              let form = document.sections.lazy.flatMap(\.items).compactMap({ item -> WireForm? in
+                                  if case let .form(form) = item { form } else { nil }
+                              }).first else { return await send(.failed(String(localized: "Couldn’t load this from your Mac. Try again."))) }
+                        await send(.presentForm(form))
+                    } catch {
+                        await send(.failed(String(localized: "Couldn’t load this from your Mac. Try again.")))
+                    }
+                }
+            case .action(.sending(let request)) where SpecEdits.handles(request):
+                state.$specEdits.withLock { $0.begin(request, form: state.form) }
+                return Optimistic.confirmation(of: request.deliveryCorrelationID, clock: clock,
+                                               cancelID: CancelID.specEdit(request.deliveryCorrelationID), overdue: Action.specEditOverdue)
+            case .action(.sent(let request)) where SpecEdits.handles(request):
+                return .send(.action(.dismiss))
+            case .action(.settled(let request, let applied)) where SpecEdits.handles(request):
+                state.$specEdits.withLock { $0.settle(request, applied: applied, shown: state.document?.version) }
+                let stop = Effect<Action>.cancel(id: CancelID.specEdit(request.deliveryCorrelationID))
+                return applied ? .merge(stop, load(state, force: true)) : stop
+            case .action(.answered(let request, let reply)) where SpecEdits.handles(request) && reply.outcome != .applied:
+                return reopen(request, field: reply.field, message: OutcomeStyle(reply).message, state: &state)
+            case .action(.undelivered(let request, let failure)) where SpecEdits.handles(request):
+                state.$specEdits.withLock { $0.settle(request, applied: false, shown: nil) }
+                return reopen(request, field: nil, message: failure.message, state: &state)
+            case .specEditOverdue(let id):
+                state.$specEdits.withLock { $0.expire(id) }
+                return .none
             case .action(.response(let response)) where response.outcome == .applied:
                 state.loading = true
                 if state.hasInlineForm {
@@ -248,6 +284,16 @@ public struct ViewsScreenFeature: Sendable {
             catch ViewsClientError.missingView { await send(.missing) }
             catch { await send(.failed(String(localized: "Couldn’t load this from your Mac. Try again."))) }
         }.cancellable(id: CancelID.load, cancelInFlight: true)
+    }
+
+    /// A refused edit goes back to what it was and its form opens again with what the person wrote.
+    private func reopen(_ request: ActionRequest, field: String?, message: String, state: inout State) -> Effect<Action> {
+        guard let edit = state.$specEdits.withLock({ $0.refused(request) }), let form = edit.form else { return .none }
+        return .concatenate(
+            .send(.presentForm(form)),
+            .send(.action(.fieldsChanged(edit.fields))),
+            .send(.action(.fieldRejected(field: field ?? "", message: message)))
+        )
     }
 
     private func loadPicker(query: String) -> Effect<Action> {

@@ -47,6 +47,7 @@ struct ViewsScreenView: View {
     private var composerSubmit: ActionComposerSheet<ActionInputView>.Submit {
         if store.form?.id == "schedule" { return .confirm(store.form?.submit.label ?? String(localized: "Save Schedule")) }
         if case .text = store.action.action?.input { return .send }
+        if store.action.action?.id?.hasPrefix("spec_edit:") == true, let label = store.form?.submit.label { return .confirm(label) }
         return .confirm(String(localized: "Continue"))
     }
 
@@ -94,14 +95,24 @@ struct ViewsScreenView: View {
             if let document = store.document {
                 documentScreen(document)
             } else if store.loading {
-                ProgressView().tint(Palette.dawn).frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(DawnBackground(glow: screenGlow))
+                if isSpecsScreen {
+                    ScrollView { SheetLoadingView().padding(16) }.background(DawnBackground(glow: screenGlow))
+                } else {
+                    ProgressView().tint(Palette.dawn).frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(DawnBackground(glow: screenGlow))
+                }
+            } else if isSpecsScreen {
+                SheetFailureView(message: store.error ?? String(localized: "Unable to load this screen")) { store.send(.refresh) }
+                    .frame(maxHeight: .infinity).background(DawnBackground(glow: screenGlow))
             } else {
                 ContentUnavailableView(store.error ?? String(localized: "Unable to load this screen"), systemImage: "exclamationmark.triangle")
                     .background(DawnBackground(glow: screenGlow))
             }
         }
+        .environment(\.specEdits, store.specEdits)
     }
+
+    private var isSpecsScreen: Bool { store.key.rawValue.hasPrefix("task_specs:") }
 
     private func documentScreen(_ document: ViewDocument) -> some View {
                 ScrollView {
@@ -167,7 +178,8 @@ struct ViewsScreenView: View {
 
     private func follow(_ link: AlondraContract.Link) {
         switch link {
-        case .view(let key): open(ViewKey(rawValue: key))
+        case .view(let key):
+            if store.key.rawValue.hasPrefix("task_specs:"), SpecEdits.isEditorForm(key) { store.send(.editSpec(key)) } else { open(ViewKey(rawValue: key)) }
         case .url(let raw):
             guard let url = URL(string: raw), url.scheme?.lowercased() == "https",
                   let host = url.host?.lowercased(), host == "github.com" || host.hasSuffix(".github.com") else { return }
