@@ -98,7 +98,8 @@ class PublicPayloadTests(unittest.TestCase):
                 self.assertEqual((stage / host / 'NODE_LICENSE').read_bytes(), (r.ROOT / 'deploy/brew/node/LICENSE').read_bytes())
 
     def test_a_published_release_without_the_antigravity_host_passes_only_as_an_older_set(self):
-        self.assertEqual(r.PUBLIC_FILES - r.PRE_SPEC_FILES, {'alondra-spec'})
+        self.assertEqual(r.PUBLIC_FILES - r.PRE_SPEC_FILES,
+                         {'alondra-spec', 'plugin/skills/spec-design/SKILL.md', 'plugin/skills/spec-validation/SKILL.md'})
         self.assertIn(r.PRE_SPEC_FILES, r.PUBLISHED_FILES)
         self.assertEqual(r.PRE_SPEC_FILES - r.PRE_ANTIGRAVITY_FILES,
                          {r.ANTIGRAVITY_HOST, r.ANTIGRAVITY_MANIFEST, 'antigravity/NODE_LICENSE'})
