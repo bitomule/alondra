@@ -27,12 +27,12 @@ use alondra_daemon_support::watcher;
 use alondra_daemon_engine::{
     accounts, allow_always, cancelled_worktrees, claude_access, domain_agent_lifecycle, domain_github, domain_holds,
     domain_messages, domain_orchestrator_reads, domain_orchestrator_tools, domain_transport, gate, host_fixtures, hosts,
-    contexts, launch_plans, live, machine_state, native_probe, node_close, node_exit, node_push, node_reports,
+    contexts, launch_plans, live, node_close, node_exit, node_push, node_reports,
     obligation_watch, options, sdk_handover, sdk_live, start_failures, task_worktrees, untaken, usage_pause, usage_probe,
 };
 #[cfg(test)]
 #[cfg(feature = "whole-engine")]
-use alondra_engine_admission::{admission, machine_watch};
+use alondra_engine_admission::{admission, machine_state, machine_watch};
 pub use alondra_engine_kernel::{domain_runtime, domain_store, sdk_backend};
 
 pub mod account_move;

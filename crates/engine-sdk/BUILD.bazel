@@ -55,7 +55,6 @@ application_crate(
     version = VERSION,
     test_visibility = ["//crates/daemon-server:__pkg__", "//crates/machine-model:__pkg__"],
     deps = all_crate_deps(normal = True) + WORKSPACE_DEPS + [
-        "//crates/daemon-engine-machine:daemon_engine_machine",
         "//crates/daemon-engine-model:daemon_engine_model",
         "//crates/daemon-support:daemon_support",
         "//crates/engine-github:engine_github",
@@ -70,7 +69,6 @@ TEST_HOOKS_DEPS = [
     "//crates/codex-protocol:codex_protocol",
     "//crates/provider-claude:provider_claude",
     "//crates/provider-codex:provider_codex",
-    "//crates/daemon-engine-machine:daemon_engine_machine",
     "//crates/daemon-engine-model:daemon_engine_model",
     "//crates/store-sqlite:store_sqlite",
     "//crates/daemon-support:daemon_support",

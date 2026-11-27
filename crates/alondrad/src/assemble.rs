@@ -123,7 +123,7 @@ type Serving = Pin<Box<dyn Future<Output = std::io::Result<()>> + Send>>;
 /// A daemon that is serving, with the loops the supervisor watches.
 pub struct Assembled {
     client: Arc<client_routes::Client>,
-    gauges: machine::Gauges,
+    gauges: alondra_engine_ports::machine::Gauges,
     pub addr: SocketAddr,
     pub domain: Arc<domain_runtime::DomainRuntime>,
     pub auth: Arc<auth::Auth>,

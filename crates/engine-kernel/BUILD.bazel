@@ -34,7 +34,6 @@ application_crate(
     crate_name = "alondra_engine_kernel",
     version = VERSION,
     deps = all_crate_deps(normal = True) + WORKSPACE_DEPS + [
-        "//crates/daemon-engine-machine:daemon_engine_machine",
         "//crates/daemon-engine-model:daemon_engine_model",
         "//crates/daemon-support:daemon_support",
     ],
@@ -52,7 +51,6 @@ low_opt_rust_test(
     env = {"HOME": ".", "TEST_EXECS": "/usr/bin/git tmpdir"},
     version = VERSION,
     deps = ["//crates/domain-rules:domain_rules"] + all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
-        "//crates/daemon-engine-machine:daemon_engine_machine",
         "//crates/daemon-engine-model:daemon_engine_model",
         "//crates/store-sqlite:store_sqlite",
         "//crates/daemon-support:daemon_support",

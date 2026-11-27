@@ -135,7 +135,7 @@ low_opt_rust_test(
     name = "lock_policy_test",
     size = "small",
     srcs = ["tests/lock_policy.rs"],
-    data = [":report_sources", "//crates/daemon-server:report_sources", "//crates/daemon-engine:report_sources", "//crates/daemon-engine-model:report_sources", "//crates/store-sqlite:report_sources", "//crates/daemon-engine-machine:report_sources", "//crates/engine-admission:report_sources", "//crates/engine-github:report_sources", "//crates/engine-live:report_sources", "//crates/engine-mcp:report_sources", "//crates/engine-worktrees:report_sources", "//crates/engine-kernel:report_sources", "//crates/engine-orchestrator:report_sources", "//crates/engine-sdk:report_sources", "//crates/daemon-support:report_sources", "//crates/system:report_sources", "//crates/foundation:report_sources"],
+    data = [":report_sources", "//crates/daemon-server:report_sources", "//crates/daemon-engine:report_sources", "//crates/daemon-engine-model:report_sources", "//crates/store-sqlite:report_sources", "//crates/engine-admission:report_sources", "//crates/engine-ports:report_sources", "//crates/engine-github:report_sources", "//crates/engine-live:report_sources", "//crates/engine-mcp:report_sources", "//crates/engine-worktrees:report_sources", "//crates/engine-kernel:report_sources", "//crates/engine-orchestrator:report_sources", "//crates/engine-sdk:report_sources", "//crates/daemon-support:report_sources", "//crates/system:report_sources", "//crates/foundation:report_sources"],
     edition = "2024",
 )
 

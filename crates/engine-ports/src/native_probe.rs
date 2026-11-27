@@ -10,9 +10,9 @@ pub enum Outcome {
 }
 
 impl Outcome {
-    pub fn of(error: &crate::domain_store::StoreError) -> Self {
+    pub fn of(error: &crate::journal::StoreError) -> Self {
         match error {
-            crate::domain_store::StoreError::Domain(error) if error.code == "stale_probe" => Self::Stale,
+            crate::journal::StoreError::Domain(error) if error.code == "stale_probe" => Self::Stale,
             _ => Self::Finished,
         }
     }

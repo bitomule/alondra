@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """The daemon reads the time, waits and starts threads only through `alondra_core::clock`, so a test
 can run it on a virtual clock. Production code of `alondrad`, the `daemon-engine*` crates, the
-`engine-*` crates and `daemon-support` never calls the system clock, a timer or a timed wait
-directly, under its own name or under an alias.
+`engine-*` crates, `daemon-support` and the machine sampler in `engine-ports` (`FILES`) never calls the
+system clock, a timer or a timed wait directly, under its own name or under an alias.
 
 Test code is outside the guard: files under `tests/`, `*_tests.rs`, `tests.rs`, `test_*.rs`, and the
 one item each `#[cfg(test)]` marks. Comments and the text of literals are not code. The guard has
@@ -15,7 +15,6 @@ from pathlib import Path
 CRATES = [
     "alondrad",
     "daemon-engine",
-    "daemon-engine-machine",
     "engine-github",
     "engine-live",
     "engine-mcp",
@@ -27,6 +26,11 @@ CRATES = [
     "daemon-engine-model",
     "store-sqlite",
     "daemon-support",
+]
+
+FILES = [
+    "engine-ports/src/machine.rs",
+    "engine-ports/src/native_probe.rs",
 ]
 
 TOKIO_TIMERS = ["sleep", "sleep_until", "interval", "interval_at", "timeout", "timeout_at", "Instant"]
@@ -299,6 +303,10 @@ def sources(root):
         for path in files:
             if path not in test_only:
                 yield path
+    for name in FILES:
+        path = absolute(Path(root) / "crates" / name)
+        if path.exists():
+            yield path
 
 
 def problems(root):

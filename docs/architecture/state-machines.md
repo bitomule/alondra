@@ -2037,7 +2037,7 @@ Second-pass coverage A (M-ENGINE-11..17): `crates/engine-admission/src/machine_w
 that fix the design), `crates/engine-admission/src/disk_peaks.rs`, `crates/engine-kernel/src/launches.rs`,
 `crates/engine-kernel/src/bg_sessions.rs`. Followed only as far as needed to check guards:
 `engine-admission/src/admission.rs` (`admit`, `snapshot_locked`, `working_tasks`, `reserving_tasks`,
-`hold_for_disk`), `engine-ports/src/disk.rs`, `system/src/disk.rs`, `daemon-engine-machine/src/{machine,swap_disk}.rs`,
+`hold_for_disk`), `engine-ports/src/disk.rs`, `system/src/disk.rs`, `engine-ports/src/machine.rs`, `engine-admission/src/swap_disk.rs`,
 `engine-sdk/src/bg_handover.rs`, `store-sqlite/src/handover.rs`, `engine-ports/src/journal/handover.rs`,
 `engine-sdk/src/sdk_owner.rs` (`start_bound`), `domain-rules/src/rules.rs` (`AdmitExecution`, `RecordTaskWorktree`),
 `engine-kernel/src/domain_runtime.rs` (`set_task_worktree`, `changed`), `engine-worktrees/src/cancelled_worktrees.rs`,
@@ -2090,27 +2090,27 @@ where = "crates/core/src/usage.rs"
 decides = "pace"
 [[timer]]
 name = "KEEP_DAYS"
-where = "crates/daemon-engine-machine/src/machine_state.rs"
+where = "crates/engine-admission/src/machine_state.rs"
 decides = "pace"
 [[timer]]
 name = "ROOM_WINDOW"
-where = "crates/daemon-engine-machine/src/machine_state.rs"
+where = "crates/engine-admission/src/machine_state.rs"
 decides = "pace"
 [[timer]]
 name = "WARNING_SPACING"
-where = "crates/daemon-engine-machine/src/machine_state.rs"
+where = "crates/engine-admission/src/machine_state.rs"
 decides = "pace"
 [[timer]]
 name = "HORIZON"
-where = "crates/daemon-engine-machine/src/swap_disk.rs"
+where = "crates/engine-admission/src/swap_disk.rs"
 decides = "pace"
 [[timer]]
 name = "MAX_GAP"
-where = "crates/daemon-engine-machine/src/swap_disk.rs"
+where = "crates/engine-admission/src/swap_disk.rs"
 decides = "pace"
 [[timer]]
 name = "WINDOW"
-where = "crates/daemon-engine-machine/src/swap_disk.rs"
+where = "crates/engine-admission/src/swap_disk.rs"
 decides = "pace"
 [[timer]]
 name = "FRESH_MS"
@@ -2871,7 +2871,7 @@ truth = ["memory", "file:machine-incident.json"]
   - a `Mutex<Record>` protects the record, and each method takes it separately (no transaction across calls).
   - The loop wakes every 10 s (`TICK`), on `changed` (declarations, launches on volumes) and on **every domain
     revision** (`cards = domain.subscribe()`, `:1053`, `:1063`; `domain_runtime.rs:941-942`). The gauges are
-    published in another loop every 10 s (`daemon-engine-machine/src/machine.rs:30-36`). A look may repeat the same
+    published in another loop every 10 s (`engine-ports/src/machine.rs:67-74`). A look may repeat the same
     `Machine`.
 
 ### M-ENGINE-12 · Waits declared for the machine (implicit, between the watch and the gate)
@@ -3710,7 +3710,7 @@ New evidence. No fixes in `git log`.
 - **Evidence**:
   1. The `watch` loop looks again on every domain revision and on `changed`, not only by clock (`:1060-1064`).
      `sample()` returns the last published `Machine`, which only changes every 10 s
-     (`daemon-engine-machine/src/machine.rs:30-36`).
+     (`engine-ports/src/machine.rs:67-74`).
   2. `look` sets `volume_readings_fresh = false` at the start (`:989`) and calls `pace` (`:990`).
   3. `pace` deduplicates the repeated sample and returns before `measure_volumes` (`:956`, with `sample()` at
      `:425-429`). `volume_readings_fresh` stays false.

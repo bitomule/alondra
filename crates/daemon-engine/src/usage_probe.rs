@@ -273,7 +273,7 @@ pub(crate) fn due(accounts: &[AccountId], usage: &[AccountUsage], probed: &HashM
 #[derive(Default)]
 struct ProbeSchedule {
     probed: HashMap<AccountId, Millis>,
-    retries: HashMap<AccountId, (crate::native_probe::Backoff, Millis)>,
+    retries: HashMap<AccountId, (alondra_engine_ports::native_probe::Backoff, Millis)>,
     sessions: HashMap<AccountId, (u64, bool)>,
 }
 
@@ -303,33 +303,33 @@ impl ProbeSchedule {
         (ready, next)
     }
 
-    fn finished(&mut self, account: &AccountId, outcome: crate::native_probe::Outcome, now: Millis) {
+    fn finished(&mut self, account: &AccountId, outcome: alondra_engine_ports::native_probe::Outcome, now: Millis) {
         match outcome {
-            crate::native_probe::Outcome::Stale => {
+            alondra_engine_ports::native_probe::Outcome::Stale => {
                 let (backoff, at) = self.retries.entry(account.clone()).or_default();
                 *at = now + backoff.next_delay().as_millis() as Millis;
             }
-            crate::native_probe::Outcome::Finished => { self.retries.remove(account); }
+            alondra_engine_ports::native_probe::Outcome::Finished => { self.retries.remove(account); }
         }
     }
 }
 
-async fn measure_account(domain: &dyn Runtime, home: &Path, account: &AccountId) -> crate::native_probe::Outcome {
+async fn measure_account(domain: &dyn Runtime, home: &Path, account: &AccountId) -> alondra_engine_ports::native_probe::Outcome {
     if !probed_accounts(domain.read().state()).iter().any(|status| status.id == *account) {
-        return crate::native_probe::Outcome::Finished;
+        return alondra_engine_ports::native_probe::Outcome::Finished;
     }
-    let Some((backend, _)) = domain.sdk() else { return crate::native_probe::Outcome::Finished };
-    let Some(hosts) = domain.ports().port::<dyn AgentHost>() else { return crate::native_probe::Outcome::Finished };
+    let Some((backend, _)) = domain.sdk() else { return alondra_engine_ports::native_probe::Outcome::Finished };
+    let Some(hosts) = domain.ports().port::<dyn AgentHost>() else { return alondra_engine_ports::native_probe::Outcome::Finished };
     let (backend, folder) = (backend.clone(), alondra_core::accounts::folder(home, account));
     if folder.as_ref().is_some_and(|folder| !folder.is_dir()) {
-        return crate::native_probe::Outcome::Finished;
+        return alondra_engine_ports::native_probe::Outcome::Finished;
     }
     let (fence, file) = match crate::accounts::probe_fence(domain, home) {
         Ok(fence) => fence,
-        Err(why) => { log!("Could not prepare the account usage probe: {why}"); return crate::native_probe::Outcome::Finished; }
+        Err(why) => { log!("Could not prepare the account usage probe: {why}"); return alondra_engine_ports::native_probe::Outcome::Finished; }
     };
     if !file.accounts.accounts(Provider::Claude).iter().any(|configured| configured.id == *account && configured.enabled && !matches!(configured.billing, AccountBilling::PayPerUse)) {
-        return crate::native_probe::Outcome::Finished;
+        return alondra_engine_ports::native_probe::Outcome::Finished;
     }
     let measured_at = now_millis();
     match alondra_core::clock::spawn_blocking(move || probe(&*hosts, &backend, folder.as_deref())).await {
@@ -339,14 +339,14 @@ async fn measure_account(domain: &dyn Runtime, home: &Path, account: &AccountId)
                 Ok(()) => crate::accounts::answered(domain),
                 Err(why) => {
                     log!("Discarded stale native usage metadata: {why}");
-                    return crate::native_probe::Outcome::of(&why);
+                    return alondra_engine_ports::native_probe::Outcome::of(&why);
                 },
             }
         }
         Ok(Err(why)) => log!("could not measure the usage of account {account}: {why}"),
         Err(_) => log!("the usage probe of account {account} stopped"),
     }
-    crate::native_probe::Outcome::Finished
+    alondra_engine_ports::native_probe::Outcome::Finished
 }
 
 /// Keeps every account measured, and the live view's copy and the Mac-wide pause in step with

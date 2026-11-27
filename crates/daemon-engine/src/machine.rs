@@ -1,4 +1,4 @@
-pub use alondra_daemon_engine_machine::machine::*;
+use alondra_engine_ports::machine::Gauges;
 use alondra_engine_ports::Runtime;
 use std::sync::Arc;
 
@@ -12,7 +12,7 @@ fn usage_at(domain: &dyn Runtime, at: alondra_core::Millis) -> (Option<alondra_c
 /// Samples the Mac through the registry's `MachineProbe` into `gauges`.
 pub async fn run(gauges: Gauges, domain: Arc<dyn Runtime>, published: Option<Arc<dyn Fn() + Send + Sync>>) {
     let probe = domain.ports().machine();
-    alondra_daemon_engine_machine::machine::run(gauges, probe, move |at| usage_at(&*domain, at), published).await
+    alondra_engine_ports::machine::run(gauges, probe, move |at| usage_at(&*domain, at), published).await
 }
 
 /// Reads again, from what the domain holds now, the accounts' part of the latest sample. A sample

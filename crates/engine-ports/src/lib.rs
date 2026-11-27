@@ -31,6 +31,7 @@ pub mod local_actions;
 pub mod local_network;
 pub mod machine;
 pub mod mcp;
+pub mod native_probe;
 pub mod node_close;
 pub mod options;
 pub mod orchestrator;

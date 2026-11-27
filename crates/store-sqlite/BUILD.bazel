@@ -27,7 +27,7 @@ adapter_out_crate(
         "//crates/daemon-engine-model:daemon_engine_model",
         "//crates/daemon-support:daemon_support",
     ],
-    test_visibility = ["//crates/alondrad:__pkg__", "//crates/daemon-engine:__pkg__", "//crates/daemon-engine-machine:__pkg__", "//crates/daemon-server:__pkg__", "//crates/engine-admission:__pkg__", "//crates/engine-github:__pkg__", "//crates/engine-kernel:__pkg__", "//crates/engine-orchestrator:__pkg__", "//crates/engine-sdk:__pkg__", "//crates/scenarios:__pkg__"],
+    test_visibility = ["//crates/alondrad:__pkg__", "//crates/daemon-engine:__pkg__", "//crates/daemon-server:__pkg__", "//crates/engine-admission:__pkg__", "//crates/engine-github:__pkg__", "//crates/engine-kernel:__pkg__", "//crates/engine-orchestrator:__pkg__", "//crates/engine-sdk:__pkg__", "//crates/scenarios:__pkg__"],
 )
 
 low_opt_rust_test(

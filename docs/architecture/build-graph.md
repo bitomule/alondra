@@ -1988,3 +1988,40 @@ main at 3264efd4d (load average 15) and after on this change (load average 6 to 
   layers foundation, domain, ports`).
 - `alondrad`'s `the_daemons_wiring_alone_implements_every_port` fails when `daemon-engine` leaves a
   part out of its `wire` (`left: ["LiveApi"]`).
+
+## The Mac's gauges inside the admission gate (phase 3 of emptying the exceptions, 2026-11-27, measured at b673368fc)
+
+`daemon-engine-machine` is gone, and with it the 4 exceptions of the crates that depended on it (the
+ceiling of `LAYER_EXCEPTIONS` from 24 to 20, [layers.md](layers.md)):
+
+- `machine_state.rs` and `swap_disk.rs`, which decide whether there is room for another node, are
+  `engine-admission`'s: the gate is their only reader.
+- `machine.rs` (the gauges, `run` and the sampling loop) joined `engine-ports/src/machine.rs`, and
+  `native_probe.rs` moved next to it: the sampler and the readings are the port's.
+- `engine-kernel` and `engine-sdk` lost a dependency their code did not use; `daemon-engine` no
+  longer re-exports any of it, and its users import from `engine-ports` or `engine-admission`.
+- The clock guard reads those two files of `engine-ports`, not the whole crate.
+
+`edit_bench`, before on main and after on this change, same base and same Mac (load average about
+15 to 24):
+
+| Edit | Before: crates / test targets reopened | After |
+|---|---:|---:|
+| `machine_state.rs` (`daemon-engine-machine` → `engine-admission`) | 20 / 82 | 10 / 55 |
+| `swap_disk.rs` (same move) | 20 / 82 | 10 / 55 |
+| `machine.rs` (`daemon-engine-machine` → `engine-ports`) | 20 / 82 | 35 / 125 |
+| `native_probe.rs` (same move) | 20 / 82 | 35 / 125 |
+| `engine-admission/src/admission.rs`, for reference | 10 / 55 | 10 / 55 |
+| `engine-ports/src/machine.rs`, for reference | 36 / 124 | 35 / 125 |
+
+| Edit of `machine_state.rs` | Actions (rustc / clippy / tests) | Build: critical path | Edit + build | Critical path with tests | Edit + build and test |
+|---|---|---:|---:|---:|---:|
+| Before | 204 (35 / 18 / 149) | 34 s | 45 s | 72 s | 108 s |
+| After | 176 (16 / 9 / 149) | 23 s | 32 s | 69 s | 99 s |
+
+- **The admission decisions** cost what any edit of `engine-admission` costs: half the crates, and
+  the build's critical path loses `engine_kernel` and `daemon_engine` before `engine_sdk_engine_test`.
+  The 149 test actions are the same on both sides: the test targets that read the source tree run
+  on every edit.
+- **The sampler** costs what any edit of `engine-ports` costs, more than before. It is a loop of a
+  few lines next to the port it feeds; its readings change with the port, not on their own.

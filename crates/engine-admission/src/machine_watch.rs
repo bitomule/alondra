@@ -680,7 +680,7 @@ fn has_space(machine: &Machine, incident: Option<&Incident>) -> bool {
 }
 
 /// Looks at the machine on every sample and whenever a node declares a wait or the user answers.
-pub async fn run(domain: std::sync::Arc<dyn Runtime>, gauges: alondra_daemon_engine_machine::machine::Gauges, alerts: impl Alerts) {
+pub async fn run(domain: std::sync::Arc<dyn Runtime>, gauges: alondra_engine_ports::machine::Gauges, alerts: impl Alerts) {
     watch(domain, move || gauges.lock_or_recover("the machine gauges").as_ref().map(|(machine, _, _)| machine.clone()), alerts, TICK).await
 }
 
