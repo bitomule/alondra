@@ -134,8 +134,6 @@ LAYER_EXCEPTIONS = {
     ],
     "crates/engine-orchestrator": [
         "crates/engine-kernel",
-        "crates/provider-claude",
-        "crates/provider-codex",
     ],
     "crates/engine-sdk": [
         "crates/daemon-engine-machine",

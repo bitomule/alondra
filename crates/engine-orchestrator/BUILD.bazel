@@ -16,8 +16,6 @@ WORKSPACE_DEPS = [
     "//crates/view-model:view_model",
     "//crates/domain:domain",
     "//crates/process-group:process_group",
-    "//crates/provider-claude:provider_claude",
-    "//crates/provider-codex:provider_codex",
     "//crates/store:store",
 ]
 
@@ -35,13 +33,15 @@ application_crate(
 )
 
 # What every test target links besides the crate's own dependencies: the doubles of the engine's
-# other pieces and the store they open.
+# other pieces, the store they open, and the providers whose batches the tests run.
 TEST_DEPS = [
     "//crates/codex-protocol:codex_protocol",
     "//crates/daemon-engine-model:daemon_engine_model",
     "//crates/daemon-support:daemon_support",
     "//crates/engine-doubles:engine_doubles",
     "//crates/engine-kernel:engine_kernel",
+    "//crates/provider-claude:provider_claude",
+    "//crates/provider-codex:provider_codex",
     "//crates/provider-contract:provider_contract",
     "//crates/store-sqlite:store_sqlite",
 ]

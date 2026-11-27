@@ -3,13 +3,12 @@
 //! a message that arrives during the turn waits for the next batch. What Claude reported goes
 //! through the same parser as `claude -p`, and `domain_orchestrator::tick` decides from its end.
 use crate::engine::OrchestratorOf as _;
-use crate::orchestrator_provider::ProviderOwner;
 use crate::domain_store::batch_effects::BatchReport;
 use crate::orchestrator_process::{self as process, Output, Stream, bounded};
 use crate::sdk_backend::SdkBackend;
 use alondra_engine_ports::agent_host::{Preparing, VerifiedArtifact};
 use alondra_engine_ports::agent_workers::WorkerConfiguration;
-use alondra_provider_claude::{BatchHost, HostEvent, McpServer, OrchestratorProfile};
+use alondra_engine_ports::batch_hosts::{BatchHost, HostEvent, McpServer, OrchestratorProfile};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -42,13 +41,17 @@ fn failed(why: String) -> Output {
 }
 
 fn run(batch: Batch, spawned: impl FnOnce() -> anyhow::Result<()>, cancelled: &AtomicBool) -> Output {
+    let batches = match alondra_engine_ports::batch_hosts::of(batch.domain.ports(), alondra_core::accounts::Provider::Claude) {
+        Ok(batches) => batches,
+        Err(error) => return failed(error.to_string()),
+    };
     let (configuration, _preparing) = match configuration(&batch) {
         Ok(configuration) => configuration,
         Err(why) => return failed(why),
     };
     let profile = profile(&batch);
     let run = batch.owner.run().to_owned();
-    let mut host = match BatchHost::start(ProviderOwner(batch.owner), &configuration, &batch.session, batch.resume, &profile, &batch.prompt) {
+    let mut host = match batches.start(batch.owner, &configuration, &batch.session, batch.resume, &profile, &batch.prompt) {
         Ok(host) => host,
         Err(error) => {
             remove_folder(&configuration.state_directory);
@@ -118,7 +121,7 @@ fn run(batch: Batch, spawned: impl FnOnce() -> anyhow::Result<()>, cancelled: &A
 
 /// Stops the batch's host, and deletes its folder, `spent`, once it ended: one whose batch could
 /// not record what it observed keeps its folder, whose outbox still holds it.
-fn stop(host: BatchHost<ProviderOwner>, directory: &Path, spent: Option<&Path>) {
+fn stop(host: Box<dyn BatchHost>, directory: &Path, spent: Option<&Path>) {
     match host.stop(){
         Ok(())=>{let _=std::fs::remove_file(directory.join("owner.json")); spent.into_iter().for_each(remove_folder);},
         Err(error)=>log!("orchestrator: the SDK host did not stop cleanly; its process record is retained: {error:?}"),

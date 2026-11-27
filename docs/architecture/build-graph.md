@@ -165,6 +165,11 @@ none on the piece that implements a port it uses.
   (`alondrad::wire_providers`) and the engine's test assembly fill; `Registry::missing` names the
   port and each provider left unwired. The values they carry are the providers' common ones
   (`WorkerConfiguration`, `WorkerProfile`, `Retained`, `NativeLiveness`, `Found`).
+- `BatchProvider` and `BatchHost` (`batch_hosts.rs`) are how the orchestrator runs one batch on the
+  provider of its account: `BatchProvider::start` takes the batch's claim (`BatchOwner`) as the
+  host's owner and gives a host to read, acknowledge and stop. Claude and Codex add theirs to
+  `BatchProviders` in the same `wire`; the profile, `McpServer` and `HostEvent` are neutral types,
+  and `batch_hosts::of` names a provider nobody wired.
 
 ## The orchestrator
 
@@ -172,7 +177,8 @@ none on the piece that implements a port it uses.
 its recovery and watchdog, `orchestrator_inbox`, `orchestrator_process`, `orchestrator_provider`,
 `orchestrator_sdk`, `orchestrator_codex` and `stall_context`. It depends on `engine-kernel` and the
 crates below it, never on `daemon-engine`, and nothing but `alondrad` depends on it (Bazel
-visibility on both).
+visibility on both). It reaches Claude and Codex only through `BatchProvider`: no provider crate is
+among its production dependencies, only its tests'.
 
 - The two crates call each other through ports, traits of `engine-ports` (see "The ports" below).
   `OrchestratorEngine` is what the orchestrator asks of the engine (choose an account, the usage
@@ -1988,3 +1994,49 @@ main at 3264efd4d (load average 15) and after on this change (load average 6 to 
   layers foundation, domain, ports`).
 - `alondrad`'s `the_daemons_wiring_alone_implements_every_port` fails when `daemon-engine` leaves a
   part out of its `wire` (`left: ["LiveApi"]`).
+
+## The orchestrator's batches behind `BatchProvider` (phase 5 of emptying the exceptions, 2026-11-27)
+
+`engine-orchestrator` ran its batches on Claude and Codex by naming `provider-claude` and
+`provider-codex` directly, so an edit of either provider recompiled the orchestrator and every test
+target that links it.
+
+What changed:
+
+- **The port** is `BatchProvider` and `BatchHost` in `engine-ports/src/batch_hosts.rs`, with the
+  operations the two drivers used (start, the stopper, read, the next pending event, input,
+  acknowledge, stop) and neutral types for the profile, `McpServer` and `HostEvent`. The host's
+  owner is the batch's claim, `journal::BatchOwner`.
+- **Each provider adds its batch host** to `BatchProviders` in its `wire`; `Registry::missing`
+  names `BatchProviders: Claude` or `: Codex` when one is left out, and the orchestrator's error
+  names a provider nobody wired. The two drivers stay apart.
+- `engine-orchestrator` has the providers only among its test dependencies (`EXCEPTION_CEILING`
+  24 → 22).
+
+`edit_bench --profile --edit crates/engine-orchestrator/src/domain_orchestrator.rs --edit
+crates/provider-claude/src/adapter.rs`, one run of each before (main at b673368fc, load average 19,
+30 % memory free) and after on the same main with this change (load average 12 to 17, 47 % free):
+
+| Edit | Crates reopened | Test targets reopened | Actions run (rustc / clippy / tests) | Build: critical path | Edit + build | Longest test target | Critical path | Edit + build or test |
+|---|---:|---:|---|---:|---:|---|---:|---:|
+| `engine-orchestrator/src/domain_orchestrator.rs`, before | 10 | 54 | 171 (15 / 8 / 146) | 20 s | 30 s | `scenarios_test` 23 s | 45 s | 92 s |
+| `engine-orchestrator/src/domain_orchestrator.rs`, after | 10 | 54 | 171 (15 / 8 / 146) | 15 s | 24 s | `cli_report_test` 25 s | 50 s | 97 s |
+| `provider-claude/src/adapter.rs`, before | 15 | 72 | 185 (28 / 16 / 138) | 35 s | 45 s | `daemon_server_test` 44 s | 94 s | 145 s |
+| `provider-claude/src/adapter.rs`, after | 14 | 70 | 197 (27 / 16 / 151) | 32 s | 42 s | `engine_sdk_engine_test` 36 s | 81 s | 113 s |
+
+- An edit of the Claude adapter no longer reopens `engine-orchestrator` nor its two test targets.
+- An edit of the orchestrator reopens the same: what depends on it did not change, only what it
+  depends on. Its seconds move with the shared queue.
+- The Claude adapter's critical path is still `provider_claude` → `engine_live` → `daemon_engine` →
+  `engine_sdk_engine_test` (30.0 s before, 26.4 s after): `daemon-engine` and `engine-live` still
+  name the providers until phase 4. Most of the 145 → 113 s is the load falling between the runs.
+
+**Guards**, each broken by hand and put back:
+
+- `//tools/layers:crate_layers_test` fails in analysis when `provider-claude` is again a production
+  dependency of `engine-orchestrator`.
+- `alondrad`'s `the_daemon_implements_every_port` and `the_daemons_wiring_alone_implements_every_port`
+  fail with `["BatchProviders: Claude"]` when Claude's `wire` leaves its batch host out.
+- `a_batch_on_a_provider_nobody_wired_starts_nothing_and_names_it` (Claude) and
+  `a_batch_on_codex_nobody_wired_starts_nothing_and_names_it` fail when the drivers give a generic
+  error instead of naming the provider.

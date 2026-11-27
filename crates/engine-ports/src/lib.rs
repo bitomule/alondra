@@ -9,6 +9,7 @@ pub mod admission;
 pub mod agent_host;
 pub mod agent_workers;
 pub mod api;
+pub mod batch_hosts;
 pub mod approval_lease;
 pub mod claude_history;
 pub mod conversation_file;
