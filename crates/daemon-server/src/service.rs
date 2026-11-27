@@ -6,7 +6,6 @@
 //! one-time durable attempt per device ID so a relay-side revocation survives reconnects and
 //! restarts; the direct transport needs only the local approval.
 #[cfg(test)]
-#[cfg(test)]
 use alondra_daemon_engine::domain_runtime::RuntimeRecords as _;
 #[cfg(test)]
 use alondra_daemon_engine::live::LiveOf as _;

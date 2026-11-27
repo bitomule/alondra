@@ -780,7 +780,7 @@
           "@@//crates/daemon-engine-machine/Cargo.toml": "46d821ecbf73bb122a12b046182dab6e40a93624ff01ff2ccf837c667daadb82",
           "@@//crates/daemon-engine-model/Cargo.toml": "f24f6513ee7c97a1c4d0c84da2714a1a6394875ce36c69a140a00b4e718fda2e",
           "@@//crates/daemon-engine/Cargo.toml": "ae4251487ba8c76fe697faaad9cafccb97f12e14e42ca26ac24563161ab3018e",
-          "@@//crates/daemon-server/Cargo.toml": "4aedc5681e3d58c420e3296964b0447d193de67647526ab1d1f86e5cf86e1053",
+          "@@//crates/daemon-server/Cargo.toml": "0e26c3cfba2842a7b929e69e396f8a5acda017fb065492a28bcc0bfe85ea3264",
           "@@//crates/daemon-support/Cargo.toml": "70de21c708701727882d3e0767be01b0ca4a5c421abeee467603e02c06e7ed9c",
           "@@//crates/domain-model/Cargo.toml": "3c6b5169d89bbb5e27a2260d2b9dec8fd2dba4a3eee9ddd73379bad086c06158",
           "@@//crates/domain-rules/Cargo.toml": "dc21e675ef17b597fe52c553e8a23f36357e67550d3aa1fae50cc923b31c1a41",

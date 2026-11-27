@@ -484,7 +484,7 @@ impl super::Client {
         let mut heads = std::collections::BTreeMap::new();
         let Some(task) = state.tasks.get(task) else { return heads };
         for pr in state.open_prs(task) {
-            let url = crate::domain_github::pr_url(&pr.host, &pr.repository, pr.number);
+            let url = alondra_engine_ports::github::pr_url(&pr.host, &pr.repository, pr.number);
             let Some(facts) = view.view(&url).await.and_then(|answer| alondra_engine_ports::github::pr_facts(&answer).ok()) else { continue };
             let (Some(tip), Ok(default_branch)) = (facts.base_head, merger.default_branch(pr).await) else { continue };
             heads.insert(pr.id.clone(), alondra_engine_ports::spec_reading::GitHubBase { branch: facts.base, tip, default_branch });

@@ -92,7 +92,6 @@ pub use alondra_engine_orchestrator::domain_orchestrator;
 pub use alondra_daemon_engine::{domain_agent_lifecycle, machine_state};
 
 pub mod operation_journal;
-pub mod reply;
 pub mod direct;
 pub mod claude_check;
 pub mod domain_api;
