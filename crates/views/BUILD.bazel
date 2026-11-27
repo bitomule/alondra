@@ -106,10 +106,12 @@ rust_library(
 # the daemon links it: without the checks only its own unit tests compile in.
 # It stays at the build's opt-level: the budget counts the instructions of that code. It compiles
 # from scratch on every edit below it, so it holds only what it measures: `budget_inputs_test` keeps
-# the fixture's source and the JSON library out of its compile.
+# the fixture's source and the JSON library out of its compile. The count does not depend on the
+# load, but the run still slows down when the Mac's queue is full: the limit is "moderate" (300 s).
 rust_test(
     name = "views_budget_test",
     size = "small",
+    timeout = "moderate",
     crate_root = "tests/views_budget.rs",
     srcs = ["tests/views_budget.rs", "tests/views_budget_meter.rs"],
     # The budgets count the whole process's instructions: one test at a time.

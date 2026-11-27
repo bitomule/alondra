@@ -34,6 +34,7 @@ low_opt_rust_test(
     name = "cli_test",
     env = {"TEST_EXECS": "/bin/cat /bin/sh /usr/bin/defaults /usr/bin/git /usr/bin/plutil tmpdir"},
     size = "small",
+    timeout = "moderate",
     srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
     compile_data = ["//launchd:alondra.plist.in"],
     crate_name = "alondra_cli",
