@@ -756,10 +756,50 @@ fn a_wait_for_calm_lasts_as_long_as_the_daemon_moves() {
     let patience = Duration::from_secs(20);
     let mut wait = Patience::new(patience, start, 7);
     assert_eq!(wait.left(start + Duration::from_secs(5)), Duration::from_secs(15));
-    assert!(!wait.extend(start + patience, 7), "nothing moved in the whole patience");
-    assert!(wait.extend(start + patience, 9), "two units moved");
+    assert!(!wait.extend(start + patience, 7, || false), "nothing moved in the whole patience");
+    assert!(wait.extend(start + patience, 9, || false), "two units moved");
     assert_eq!(wait.left(start + patience), patience, "the limit moved on by a whole patience");
-    assert!(!wait.extend(start + 2 * patience, 9), "and nothing moved after");
+    assert!(!wait.extend(start + 2 * patience, 9, || false), "and nothing moved after");
+}
+
+/// What the clock does not count, such as a host's process that waits for a core, moves the limit
+/// on while it still moves, and a wait it no longer moves is over.
+#[test]
+fn a_wait_for_calm_lasts_while_something_the_clock_does_not_count_moves() {
+    let start = std::time::Instant::now();
+    let patience = Duration::from_secs(20);
+    let mut wait = Patience::new(patience, start, 7);
+    assert!(wait.extend(start + patience, 7, || true), "a process still waits for a core");
+    assert_eq!(wait.left(start + patience), patience, "the limit moved on by a whole patience");
+    assert!(!wait.extend(start + 2 * patience, 7, || false), "nothing moved after");
+}
+
+/// A wait for calm asks what the clock does not count only at its limit, outside the clock's hold:
+/// what it sees there may end a unit of work, which wakes the wait.
+#[test]
+fn a_wait_for_calm_looks_again_once_what_still_moved_settles() {
+    let runtime = VirtualRuntime::new(EPOCH).unwrap();
+    runtime.block_on(async {
+        frame_sent("host");
+        let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let looked = asked.clone();
+        let calm = spawn_blocking_unwatched(move || {
+            until_calm(Duration::from_millis(20), || true, move || {
+                if looked.fetch_add(1, Ordering::SeqCst) == 2 {
+                    frame_handled("host");
+                }
+                true
+            })
+        });
+        assert!(calm.await.unwrap(), "the frame was handled while the host still moved");
+        assert!(asked.load(Ordering::SeqCst) >= 3, "asked at each limit until the frame was handled");
+        let stuck = spawn_blocking_unwatched(|| {
+            frame_sent("host");
+            until_calm(Duration::from_millis(20), || true, || false)
+        });
+        assert!(!stuck.await.unwrap(), "a frame nothing moves is a hang");
+        frame_handled("host");
+    });
 }
 
 #[test]
