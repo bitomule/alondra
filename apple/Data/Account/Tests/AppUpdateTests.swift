@@ -145,8 +145,11 @@ struct AppUpdateTests {
         #expect(account.store.phase == .approved)
         let services = try #require(account.services)
         #expect(await services.viewActionSender.setAside.current == SetAsideAnswers(cards: [], otherActions: 0, complete: false))
-        let setAside = try FileManager.default.contentsOfDirectory(atPath: intents.appending(path: "set-aside").path)
-        #expect(setAside.count == 1, "the unreadable store is kept for diagnosis")
+        let setAside = intents.appending(path: "set-aside")
+        let folders = try FileManager.default.contentsOfDirectory(atPath: setAside.path)
+        #expect(folders.count == 1)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: setAside.appending(path: folders[0]).path) == ["answers.json"],
+                "the unreadable store is deleted and only its notice stays")
     }
 
     @Test func anUpdateKeepsTheSessionAndThePairing() async throws {

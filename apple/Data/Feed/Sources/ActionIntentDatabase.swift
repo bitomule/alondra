@@ -161,19 +161,18 @@ final class ActionIntentDatabase: Sendable {
             guard fsync(fd) == 0 else { throw ViewActionIntentError.unreadableStore }
         }
     }
-    /// Reads what it still can of the answers the store held, then moves every file of it into
-    /// `folder`. Nothing read here is ever sent: the store could not prove what the Mac has.
-    func setAside(into folder: URL) async throws -> SetAsideAnswers {
+    /// Reads what it still can of the answers the store held, then deletes every file of it: an
+    /// answer in it may carry a key no Mac confirmed. Nothing read here is ever sent: the store
+    /// could not prove what the Mac has.
+    func removeUnreadable() async throws -> SetAsideAnswers {
         try await withCheckedThrowingContinuation { continuation in
             queue.async {
                 do {
                     let answers = try self.legacy.locked {
                         let answers = self.salvage()
-                        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true,
-                                                                attributes: [.posixPermissions: 0o700])
                         for entry in try FileManager.default.contentsOfDirectory(atPath: self.directory.path)
                         where entry.hasPrefix(self.name) && !entry.hasSuffix(".lock") {
-                            try FileManager.default.moveItem(at: self.directory.appending(path: entry), to: folder.appending(path: entry))
+                            try FileManager.default.removeItem(at: self.directory.appending(path: entry))
                         }
                         try self.syncDirectories()
                         return answers

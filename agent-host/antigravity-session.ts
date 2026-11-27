@@ -15,7 +15,9 @@ const MAX_NATIVE_LINE = 4 * 1024 * 1024;
 const MAX_PENDING = 64;
 const MAX_QUEUED = 64;
 const MAX_PROMPT_BYTES = 900_000;
-const MAX_KEY_BYTES = 4096;
+/** The largest key file read, and the longest key it may hold: the daemon's `KEY_FILE_LIMIT` and `KEY_LIMIT`. */
+const MAX_KEY_FILE_BYTES = 4096;
+const MAX_KEY_BYTES = 512;
 /** agy answers its startup in a few seconds; past this its session is not going to open. */
 const OPENING_TIMEOUT_MS = 90_000;
 /** How long `session/close` may take before the process group is ended anyway. */
@@ -35,8 +37,8 @@ type Access = keyof typeof ACCESS_METHODS;
 const ALONDRA_TOOL_PREFIX = 'mcp_alondra_';
 const NEVER_CHOSEN = new Set(['allow_always', 'reject_always']);
 const EFFORT_LEVELS: Record<string, readonly string[]> = { low: ['low'], medium: ['medium'], high: ['high'], xhigh: ['xhigh', 'extra'], max: ['max'] };
-/** Credentials agy would otherwise inherit: a node only ever runs on its own account's. */
-export const CREDENTIAL_ENVIRONMENT = ['GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_APPLICATION_CREDENTIALS', 'GOOGLE_CLOUD_PROJECT', 'GOOGLE_CLOUD_LOCATION', 'GOOGLE_CLOUD_QUOTA_PROJECT', 'GOOGLE_GENAI_USE_VERTEXAI', 'AGY_ADC_AUTH', 'GOOGLE_GEMINI_BASE_URL', 'GEMINI_HOME'] as const;
+/** Credentials, and where agy keeps a sign-in, that agy would otherwise inherit: a node only ever runs on its own account's. The daemon's `CREDENTIAL_VARIABLES`. */
+export const CREDENTIAL_ENVIRONMENT = ['GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_APPLICATION_CREDENTIALS', 'GOOGLE_CLOUD_PROJECT', 'GOOGLE_CLOUD_LOCATION', 'GOOGLE_CLOUD_QUOTA_PROJECT', 'GOOGLE_GENAI_USE_VERTEXAI', 'AGY_ADC_AUTH', 'GOOGLE_GEMINI_BASE_URL', 'GEMINI_HOME', 'AGY_ACP_FORCE_FILE_STORAGE', 'SSH_CONNECTION'] as const;
 /** agy 1.5 keeps an OAuth sign-in in its folder only when it believes it runs remotely. */
 const FILE_STORAGE_SSH_CONNECTION = '127.0.0.1 0 127.0.0.1 0';
 type OpeningStep = 'initialize' | 'authenticate' | 'session_resume' | 'session_new' | 'configure';
@@ -89,7 +91,11 @@ export function alondraMcpEnvironment(config: HostConfiguration): Record<string,
   return env;
 }
 
-/** The key an account keeps for agy: a private regular file of the user's, read without following links. */
+/**
+ * The key an account keeps for agy, by the daemon's rule (`key_in_file`, `key_file_private`): a
+ * regular file of the user's that no one else may read or write, with no other link, read without
+ * following links; the key is its text without the white space around it.
+ */
 export function readKeyFile(path: string): string {
   if (!isAbsolute(path)) throw new OpeningRefused('native_initialization_failed');
   let fd: number;
@@ -97,10 +103,15 @@ export function readKeyFile(path: string): string {
   catch (error) { throw (error as NodeJS.ErrnoException).code === 'ENOENT' ? new AccountRefused('authentication_required') : new OpeningRefused('native_initialization_failed'); }
   try {
     const meta = fstatSync(fd);
-    if (!meta.isFile() || meta.nlink !== 1 || meta.uid !== process.getuid?.() || (meta.mode & 0o777) !== 0o600 || meta.size > MAX_KEY_BYTES) throw new OpeningRefused('native_initialization_failed');
-    const key = readFileSync(fd, 'utf8').trim();
+    if (!meta.isFile() || meta.nlink !== 1 || meta.uid !== process.getuid?.() || (meta.mode & 0o077) !== 0 || meta.size > MAX_KEY_FILE_BYTES) throw new OpeningRefused('native_initialization_failed');
+    const bytes = readFileSync(fd);
+    let text: string;
+    try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
+    catch { throw new OpeningRefused('native_initialization_failed'); }
+    finally { bytes.fill(0); }
+    const key = text.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, '');
     if (!key) throw new AccountRefused('authentication_required');
-    if (/[\s\0]/.test(key)) throw new OpeningRefused('native_initialization_failed');
+    if (Buffer.byteLength(key) > MAX_KEY_BYTES || /[\p{White_Space}\p{Cc}]/u.test(key)) throw new OpeningRefused('native_initialization_failed');
     return key;
   } finally { closeSync(fd); }
 }

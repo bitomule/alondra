@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use alondra_core::accounts::{AccountKey, MANAGED_PROVIDER_FOLDER, Provider, provider_folder};
-use alondra_core::antigravity_account::{self as antigravity, AGENT_NAME, AUTH_REQUIRED, Access, KEY_FILE, KEY_LIMIT, PROTOCOL_VERSION, SHARED, Version};
+use alondra_core::antigravity_account::{self as antigravity, AGENT_NAME, AUTH_REQUIRED, Access, KEY_FILE, KEY_FILE_LIMIT, PROTOCOL_VERSION, SHARED, Version};
 use alondra_core::antigravity_account::{Check, CheckReport, Probe as ProbeSpec, Secret, Unavailable, UsageOutcome};
 use alondra_core::model_selection::CatalogModel;
 
@@ -131,8 +131,9 @@ fn sync_folder(folder: &Path) -> Result<(), String> {
     fs::File::open(folder).and_then(|folder| folder.sync_all()).map_err(|error| error.to_string())
 }
 
-/// The account's key, when its folder keeps one: read without following a link, and only from the
-/// user's own `0600` regular file.
+/// The account's key, when its folder keeps one: read without following a link, only from the
+/// user's own regular file that no one else may read or write and that has no other link, by the
+/// rule the Antigravity host reads it with (`antigravity::key_in_file`).
 pub fn key(home: &Path, key: &AccountKey) -> Result<Option<Secret>, String> {
     if key.account.is_default() { return Ok(None); }
     let folder = account_folder(home, key)?;
@@ -143,21 +144,29 @@ pub fn key(home: &Path, key: &AccountKey) -> Result<Option<Secret>, String> {
         Err(error) => return Err(error.to_string()),
     };
     let owner = fs::metadata(&folder).map_err(|error| error.to_string())?.uid();
-    if !expected.is_file() || expected.file_type().is_symlink() || expected.nlink() != 1 || expected.uid() != owner || expected.mode() & 0o077 != 0 || expected.len() > KEY_LIMIT as u64 {
+    if !expected.is_file() || expected.file_type().is_symlink() || expected.nlink() != 1 || expected.uid() != owner
+        || !antigravity::key_file_private(expected.mode()) || expected.len() > KEY_FILE_LIMIT as u64 {
         return Err("The account's key file is not a private regular file".into());
     }
     let mut file = OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC).open(&path).map_err(|error| error.to_string())?;
     let opened = file.metadata().map_err(|error| error.to_string())?;
     if opened.ino() != expected.ino() || opened.dev() != expected.dev() { return Err("The account's key file changed while opening it".into()); }
-    let mut bytes = Vec::with_capacity(KEY_LIMIT);
-    Read::by_ref(&mut file).take(KEY_LIMIT as u64 + 1).read_to_end(&mut bytes).map_err(|error| error.to_string())?;
-    let text = String::from_utf8(bytes).map_err(|_| "The account's key file is not text".to_owned())?;
-    Ok(Some(Secret::new(text)))
+    let mut bytes = Vec::with_capacity(KEY_FILE_LIMIT + 1);
+    Read::by_ref(&mut file).take(KEY_FILE_LIMIT as u64 + 1).read_to_end(&mut bytes).map_err(|error| error.to_string())?;
+    if bytes.len() > KEY_FILE_LIMIT { bytes.fill(0); return Err("The account's key file is not a private regular file".into()); }
+    let text = match String::from_utf8(bytes) {
+        Ok(text) => Secret::new(text),
+        Err(error) => { error.into_bytes().fill(0); return Err("The account's key file is not text".into()); }
+    };
+    match antigravity::key_in_file(text.expose()) {
+        Ok(found) => Ok(found.map(|found| Secret::new(found.to_owned()))),
+        Err(problem) => Err(format!("The account's key file does not hold a key: {problem}")),
+    }
 }
 
-/// Whether the account's folder keeps a key.
-pub fn key_set(home: &Path, key: &AccountKey) -> bool {
-    !key.account.is_default() && provider_folder(home, key).is_some_and(|folder| fs::symlink_metadata(folder.join(KEY_FILE)).is_ok_and(|meta| meta.is_file()))
+/// Whether the account's folder keeps a key `key` reads: a file it refuses is no key.
+pub fn key_set(home: &Path, account: &AccountKey) -> bool {
+    matches!(key(home, account), Ok(Some(_)))
 }
 
 /// What `agy --version` says, run with the account's environment.

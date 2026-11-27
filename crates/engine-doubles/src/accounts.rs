@@ -143,6 +143,17 @@ pub fn codex_fixture() -> ProbeReport {
     }
 }
 
+/// A named Antigravity account's folder, as the Mac accepts it: a real folder only its owner may
+/// open.
+fn antigravity_folder(home: &Path, key: &AccountKey) -> Result<PathBuf, String> {
+    use std::os::unix::fs::MetadataExt as _;
+    if key.provider != Provider::Antigravity { return Err("The account is not an Antigravity account".into()); }
+    let folder = accounts::provider_folder(home, key).ok_or("The default account is agy's own sign-in: only a named account keeps a key")?;
+    let meta = std::fs::symlink_metadata(&folder).map_err(|_| "The account's folder is missing: add the account again".to_owned())?;
+    if meta.file_type().is_symlink() || !meta.is_dir() || meta.mode() & 0o077 != 0 { return Err("The account's folder is not a private folder of Alondra's".into()); }
+    Ok(folder)
+}
+
 /// What a test's Antigravity account check answers unless it says otherwise: signed in on
 /// `agy` 1.5.14, with one model, `fixture-gemini`, at medium or high thinking.
 pub fn antigravity_fixture() -> CheckReport {
@@ -233,29 +244,46 @@ impl Port for Accounts {
     fn set_antigravity_key(&self, home: &Path, key: &AccountKey, secret: Option<&Secret>) -> Result<(), String> {
         use std::io::Write as _;
         use std::os::unix::fs::OpenOptionsExt as _;
-        let folder = accounts::provider_folder(home, key).ok_or("The default account is agy's own sign-in: only a named account keeps a key")?;
-        if !folder.is_dir() { return Err("The account's folder is missing: add the account again".into()); }
+        static STAGED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let folder = antigravity_folder(home, key)?;
         let path = folder.join(KEY_FILE);
+        if std::fs::symlink_metadata(&path).is_ok_and(|meta| !meta.file_type().is_file()) { return Err("The account's key file is not a regular file".into()); }
         let Some(secret) = secret else {
             return match std::fs::remove_file(&path) { Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error.to_string()), _ => Ok(()) };
         };
-        let staged = folder.join(format!(".{KEY_FILE}.staged"));
-        let mut file = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&staged).map_err(|error| error.to_string())?;
-        file.write_all(secret.expose().as_bytes()).map_err(|error| error.to_string())?;
-        std::fs::rename(&staged, &path).map_err(|error| error.to_string())
+        if let Some(problem) = alondra_core::antigravity_account::key_problem(secret.expose()) { return Err(problem.into()); }
+        let staged = folder.join(format!(".{KEY_FILE}.{}-{}", std::process::id(), STAGED.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+        let written = (|| {
+            let mut file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(&staged)?;
+            std::fs::set_permissions(&staged, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
+            file.write_all(secret.expose().as_bytes())?;
+            file.sync_all()?;
+            std::fs::rename(&staged, &path)
+        })();
+        if written.is_err() { let _ = std::fs::remove_file(&staged); }
+        written.map_err(|error| error.to_string())
     }
 
     fn antigravity_key(&self, home: &Path, key: &AccountKey) -> Result<Option<Secret>, String> {
-        let Some(folder) = accounts::provider_folder(home, key) else { return Ok(None) };
-        match std::fs::read_to_string(folder.join(KEY_FILE)) {
-            Ok(text) => Ok(Some(Secret::new(text))),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(error.to_string()),
+        use std::os::unix::fs::MetadataExt as _;
+        use alondra_core::antigravity_account::{KEY_FILE_LIMIT, key_file_private, key_in_file};
+        if key.account.is_default() { return Ok(None); }
+        let folder = antigravity_folder(home, key)?;
+        let meta = match std::fs::symlink_metadata(folder.join(KEY_FILE)) {
+            Ok(meta) => meta,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.to_string()),
+        };
+        if !meta.file_type().is_file() || meta.nlink() != 1 || !key_file_private(meta.mode()) || meta.len() > KEY_FILE_LIMIT as u64 {
+            return Err("The account's key file is not a private regular file".into());
         }
+        let bytes = std::fs::read(folder.join(KEY_FILE)).map_err(|error| error.to_string())?;
+        let text = String::from_utf8(bytes).map_err(|_| "The account's key file is not text".to_owned())?;
+        key_in_file(&text).map(|found| found.map(|found| Secret::new(found.to_owned()))).map_err(str::to_owned)
     }
 
     fn antigravity_key_set(&self, home: &Path, key: &AccountKey) -> bool {
-        accounts::provider_folder(home, key).is_some_and(|folder| folder.join(KEY_FILE).is_file())
+        matches!(self.antigravity_key(home, key), Ok(Some(_)))
     }
 
     fn check_antigravity(&self, probe: &AntigravityProbe) -> CheckReport {

@@ -112,7 +112,8 @@ fn an_api_key_reaches_only_its_accounts_agy_and_no_file_alondra_writes() {
     let folder = alondra_core::accounts::provider_folder(&slice._home, &AccountKey::new(Provider::Antigravity, studio.clone())).unwrap();
     assert_eq!(received(&record, "authenticate")[0]["params"]["methodId"], "gemini-api-key");
     let started = &recorded(&record, "starts.jsonl")[0];
-    assert!(started["names"].as_array().unwrap().iter().any(|name| name == "GEMINI_API_KEY"), "agy gets its key in its environment");
+    assert_eq!(started["geminiKeySha256"], key_digest(KEY), "agy gets the key of its account's file in its environment");
+    assert!(started["googleKeySha256"].is_null(), "and no Agent Platform key");
     assert_eq!(started["values"]["GEMINI_HOME"], folder.display().to_string());
     assert_eq!(started["argv"], serde_json::json!(["acp", "--gemini-dir", folder.display().to_string()]));
     driver.stop().unwrap();
@@ -127,6 +128,41 @@ fn an_api_key_reaches_only_its_accounts_agy_and_no_file_alondra_writes() {
         }
     }
     assert_eq!(holders, Vec::<PathBuf>::new(), "the key is in no journal, lock, log, state or record of Alondra's");
+}
+
+fn key_digest(key: &str) -> serde_json::Value {
+    use sha2::Digest as _;
+    serde_json::Value::String(sha2::Sha256::digest(key.as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+/// The user removes the key while a node of the account works: its file goes, and the host that
+/// takes the node over after its agy ended starts no agy without a key, nor with the one removed.
+#[test]
+fn a_key_removed_while_a_node_runs_reaches_no_later_agy() {
+    let slice = Slice::new();
+    let studio = AccountId::parse("studio").unwrap();
+    let account = AccountKey::new(Provider::Antigravity, studio.clone());
+    let record = configured(&slice, &studio, Access::ApiKey, hold());
+    let mut driver = launch(&slice, &studio);
+    until_working(&slice, &mut driver, &record);
+    let file = alondra_core::accounts::provider_folder(&slice._home, &account).unwrap().join(alondra_core::antigravity_account::KEY_FILE);
+    std::fs::remove_file(&file).unwrap();
+    slice.run(&user(), "remove-key", Command::RecordAccountCredential { account: account.clone(), set: false });
+    let agy = recorded(&record, "starts.jsonl")[0]["pid"].as_i64().unwrap() as i32;
+    // SAFETY: the test signals only the fake agy its own node started, by the pid that agy recorded.
+    assert_eq!(unsafe { libc::kill(agy, libc::SIGKILL) }, 0, "{}", std::io::Error::last_os_error());
+    let error = loop {
+        if let Err(error) = driver.observe() { break error; }
+    };
+    assert!(driver.host_to_replace(), "the host that lost its agy is replaced: {error}");
+    if let Ok(mut replaced) = driver.replace_ended_host(&slice.backend, Some(&slice.plugin)) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while replaced.observe().is_ok() && std::time::Instant::now() < deadline && !replaced.waits_for_host() {}
+        let _ = replaced.stop();
+    }
+    let starts = recorded(&record, "starts.jsonl");
+    assert_eq!(starts.len(), 1, "no agy started after the key went: {starts:?}");
+    assert!(!file.exists());
 }
 
 /// A run on a real Antigravity CLI and a Gemini API key, by hand: `ALONDRA_E2E_AGY` names the `agy`

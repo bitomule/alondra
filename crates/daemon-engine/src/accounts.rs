@@ -703,9 +703,11 @@ pub(crate) fn migrate_legacy_settings(domain: &dyn Runtime, home: &Path) -> Resu
 }
 
 /// Sets (`secret`) or clears the key of the named Antigravity account `key`: written to its folder
-/// through the accounts port, then only that its credential changed is committed as `actor`. The
-/// next check sees the account with it. The key is in no error, log line or reply. A key is cleared
-/// whatever the account's access, so one an account kept before its access changed can still go.
+/// through the accounts port, then only that its credential changed is committed as `actor`. When
+/// the domain does not commit it, the folder gets back the key it had, so no key is used that the
+/// domain never recorded. The next check sees the account with it. The key is in no error, log line
+/// or reply. A key is cleared whatever the account's access, so one an account kept before its
+/// access changed can still go. Callers hold the account settings, as every change to them does.
 pub fn set_credential_authorized(domain: &dyn Runtime, home: &Path, actor: &Actor, key: &AccountKey, secret: Option<alondra_core::antigravity_account::Secret>,
     authorize: impl Fn() -> anyhow::Result<()>) -> Result<(), ChangeRefused>
 {
@@ -729,14 +731,23 @@ pub fn set_credential_authorized(domain: &dyn Runtime, home: &Path, actor: &Acto
     let accounts = domain.ports().accounts();
     let user_home = crate::antigravity_accounts::Antigravity::of(domain).map_or_else(|| Claude::user_home(domain), |agy| agy.user_home);
     accounts.prepare_antigravity(home, key, &crate::antigravity_accounts::Antigravity::shared(&user_home)).map_err(|why| ChangeRefused::Store(Refused::Folder(why)))?;
+    let previous = accounts.antigravity_key(home, key);
     accounts.set_antigravity_key(home, key, secret.as_ref()).map_err(|why| ChangeRefused::Store(Refused::Folder(why)))?;
     drop(secret);
     crate::antigravity_accounts::forget(home, key);
-    domain.execute(actor, &envelope, None, || Ok(())).map_err(|why| match why {
+    let committed = domain.execute(actor, &envelope, None, || Ok(())).map_err(|why| match why {
         crate::domain_store::StoreError::Domain(why) => ChangeRefused::Domain(why),
         why => ChangeRefused::Store(Refused::Folder(why.to_string())),
-    })?;
-    Ok(())
+    });
+    if committed.is_err() {
+        let restored = match &previous {
+            Ok(previous) => accounts.set_antigravity_key(home, key, previous.as_ref()),
+            Err(_) => accounts.set_antigravity_key(home, key, None),
+        };
+        if let Err(why) = restored { log!("Account {} kept a key its change did not record, and putting the old one back failed: {why}", key.wire_id()); }
+        crate::antigravity_accounts::forget(home, key);
+    }
+    committed.map(|_| ())
 }
 
 /// Why a change from Settings was not made.
@@ -1066,7 +1077,8 @@ pub(crate) fn store(accounts: &dyn Accounts, home: &Path, user_home: &Path, clau
 }
 
 /// What a change leaves to do once `options.toml` holds it: the folders of the accounts it took
-/// away, and the keys of the Antigravity accounts whose new access keeps none.
+/// away, and the keys of the Antigravity accounts whose access changed: a Gemini API key and an
+/// Agent Platform key are not the same key, and a Google sign-in takes none.
 #[derive(Default)]
 struct Leftovers { removed: Vec<AccountKey>, keyless: Vec<AccountKey> }
 
@@ -1084,8 +1096,10 @@ fn prepare_account_changes(accounts: &dyn Accounts, home: &Path, user_home: &Pat
             }
         }
     }
-    let keyless = after.iter().filter(|id| id.provider == Provider::Antigravity && before.contains(id)
-        && current.antigravity_settings(&id.account).access.takes_key() && !next.antigravity_settings(&id.account).access.takes_key()).cloned().collect();
+    let keyless = after.iter().filter(|id| id.provider == Provider::Antigravity && before.contains(id) && {
+        let (was, will) = (current.antigravity_settings(&id.account).access, next.antigravity_settings(&id.account).access);
+        was.takes_key() && was != will
+    }).cloned().collect();
     let removed: Vec<AccountKey> = before.iter().filter(|id| !after.contains(id)).cloned().collect();
     if let Some(busy) = removed.iter().find(|id| working.contains(*id)) {
         let name = current.find(busy.provider, busy.account.as_str()).map_or_else(|| busy.wire_id(), |account| account.name);

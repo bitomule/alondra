@@ -76,6 +76,8 @@ pub struct Overdue {
 pub struct Optimistic {
     sending: HashMap<String, Sending>,
     applied: HashMap<Key, Applied>,
+    /// The actions whose input is a secret: what they send never goes to the next process.
+    secret_actions: std::collections::HashSet<String>,
 }
 
 impl Optimistic {
@@ -103,6 +105,12 @@ impl Optimistic {
 
     pub fn request(&self, command: &str) -> Option<&Value> {
         self.sending.get(command).map(|s| &s.request)
+    }
+
+    /// Whatever `action_id` sends carries a secret (a key, a secret answer): it is never handed to
+    /// the process that takes over from this one.
+    pub fn secret_action(&mut self, action_id: &str) {
+        self.secret_actions.insert(action_id.to_owned());
     }
 
     /// The action leaves now. A `target` is the card it takes out of sight until the daemon answers.
@@ -139,9 +147,13 @@ impl Optimistic {
         self.sending.len()
     }
 
-    /// The answers still on their way, for the process that takes over from this one.
+    /// The answers still on their way, for the process that takes over from this one. One that
+    /// carries a secret stays behind: the restore file is never a copy of it, and its card shows
+    /// again in the new process unless the daemon applied it.
     pub fn unconfirmed(&self) -> Vec<Unconfirmed> {
-        self.sending.iter().map(|(command, sending)| Unconfirmed { command: command.clone(), sending: sending.clone() }).collect()
+        self.sending.iter()
+            .filter(|(_, sending)| !sending.request["action_id"].as_str().is_some_and(|action| self.secret_actions.contains(action)))
+            .map(|(command, sending)| Unconfirmed { command: command.clone(), sending: sending.clone() }).collect()
     }
 
     /// Takes over the answers a previous process left on their way: each is sent again at once.
@@ -221,6 +233,16 @@ mod tests {
         let mut optimistic = Optimistic::default();
         optimistic.begin(request(command, "e1"), Some(Key(card.into())), answer(), NOW);
         optimistic
+    }
+
+    #[test]
+    fn an_answer_that_carries_a_secret_is_never_handed_to_the_next_process() {
+        let mut optimistic = sent("c1", "card");
+        optimistic.secret_action("ans:c2");
+        optimistic.begin(request("c2", "e1"), Some(Key("secret-card".into())), answer(), NOW);
+        let carried = serde_json::to_string(&optimistic.unconfirmed()).unwrap();
+        assert!(carried.contains("\"c1\"") && !carried.contains("ans:c2"), "{carried}");
+        assert!(optimistic.hides(&Key("secret-card".into())), "this process still waits for it");
     }
 
     #[test]

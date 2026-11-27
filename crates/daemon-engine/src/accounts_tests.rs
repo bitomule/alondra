@@ -694,3 +694,63 @@ fn an_antigravity_key_goes_only_with_the_change_that_drops_it_and_a_re_added_acc
     prepare_account_changes(&accounts, &f.home, &f.user_home, None, None, &without, &again, &[]).unwrap();
     assert!(!accounts.antigravity_key_set(&f.home, &studio), "an account added again starts from an empty folder, never with the key a failed removal left");
 }
+
+/// A Gemini API key and an Agent Platform key are not the same key: an account that changes from
+/// one access to the other drops its key with the change, and keeps it while its access stays.
+#[test]
+fn an_antigravity_key_goes_when_the_account_moves_between_api_key_and_cloud_project() {
+    use alondra_core::antigravity_account::{Access, Secret, Settings};
+    use alondra_engine_ports::accounts::Accounts as _;
+    let f = fixture();
+    let accounts = alondra_engine_doubles::accounts::Accounts::default();
+    let mut fresh = AccountsConfig::fresh();
+    fresh.connect(Provider::Antigravity);
+    let studio = AccountKey::new(Provider::Antigravity, AccountId::parse("studio").unwrap());
+    let with = |config: &AccountsConfig, access: Access| {
+        let mut config = config.clone();
+        config.antigravity.iter_mut().find(|account| account.id == studio.account).unwrap().access = access;
+        config
+    };
+    let api_key = fresh.changed(Provider::Antigravity, &AccountChange::Add { name: "Studio".into(), antigravity: Some(Settings::of(Access::ApiKey)) }).unwrap();
+    accounts.prepare_antigravity(&f.home, &studio, &f.user_home.join(".gemini")).unwrap();
+    for (from, to, kept) in [(Access::ApiKey, Access::CloudProject, false), (Access::CloudProject, Access::ApiKey, false), (Access::ApiKey, Access::ApiKey, true), (Access::CloudProject, Access::CloudProject, true)] {
+        accounts.set_antigravity_key(&f.home, &studio, Some(&Secret::new("AIza-fixture".into()))).unwrap();
+        let leftovers = prepare_account_changes(&accounts, &f.home, &f.user_home, None, None, &with(&api_key, from), &with(&api_key, to), &[]).unwrap();
+        cleanup_account_folders(&accounts, &f.home, &leftovers);
+        assert_eq!(accounts.antigravity_key_set(&f.home, &studio), kept, "{from:?} to {to:?}");
+    }
+}
+
+/// The key is written before its change is committed; when the domain refuses the change, the
+/// folder gets back what it held, so no node or check runs on a key the domain never recorded.
+#[test]
+fn a_key_change_the_domain_refuses_leaves_the_folder_as_it_was() {
+    use alondra_core::antigravity_account::{Access, Secret, Settings};
+    use alondra_engine_ports::accounts::Accounts as _;
+    let f = fixture();
+    let domain = Arc::new(crate::wiring::open(&f.home).unwrap());
+    let doubles = alondra_engine_doubles::accounts::of(domain.ports());
+    let mut config = AccountsConfig::fresh();
+    config.connect(Provider::Antigravity);
+    let config = config.changed(Provider::Antigravity, &AccountChange::Add { name: "Studio".into(), antigravity: Some(Settings::of(Access::ApiKey)) }).unwrap();
+    std::fs::write(alondra_core::options::path_in(&f.home), config.to_toml()).unwrap();
+    let studio = AccountKey::new(Provider::Antigravity, AccountId::parse("studio").unwrap());
+    doubles.prepare_antigravity(&f.home, &studio, &f.user_home.join(".gemini")).unwrap();
+    begin_initial_check(&*domain);
+    assert_eq!(check_current(&*domain, &f.home), crate::native_probe::Outcome::Finished);
+    let user = Actor::User { user_id: "device:test".into() };
+    let key = || doubles.antigravity_key(&f.home, &studio).unwrap().map(|key| key.expose().to_owned());
+    // Only the user changes an account's settings: the domain refuses the same change from the system.
+    let refused = |secret: Option<&str>| set_credential_authorized(&*domain, &f.home, &Actor::System, &studio, secret.map(|secret| Secret::new(secret.into())), || Ok(()));
+
+    assert!(matches!(refused(Some("AIza-never-recorded")), Err(ChangeRefused::Domain(_))));
+    assert_eq!(key(), None, "a refused key is not left behind");
+    set_credential_authorized(&*domain, &f.home, &user, &studio, Some(Secret::new("AIza-recorded".into())), || Ok(())).unwrap();
+    assert_eq!(key().as_deref(), Some("AIza-recorded"));
+    assert!(matches!(refused(Some("AIza-never-recorded")), Err(ChangeRefused::Domain(_))));
+    assert_eq!(key().as_deref(), Some("AIza-recorded"), "a refused replacement puts the recorded key back");
+    assert!(matches!(refused(None), Err(ChangeRefused::Domain(_))));
+    assert_eq!(key().as_deref(), Some("AIza-recorded"), "a refused removal keeps it");
+    let state = domain.read().state().clone();
+    assert!(state.accounts.iter().find(|status| status.id == studio.account).unwrap().antigravity.as_ref().unwrap().key_set);
+}
