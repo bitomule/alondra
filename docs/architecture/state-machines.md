@@ -1196,7 +1196,9 @@ transitions = ["Requested -> Validating", "Validating -> Interrupted", "Interrup
   included); then for each commit of a project with specs, `validation_required` (implementer) or `validation_pending`
   (validator) when the engine lists anything there, `spec_change_open` (a change of the specs
   waits), `ledger_unrecorded` for a ledger entry no validator recorded with that fingerprint and
-  verdict, and, for a validator, `changed_after_validation` when anything but the ledger changed
+  verdict, neither for the delivering task nor for a task it continues along its chain of
+  continuations (`DomainState::validation_record`, which stops at a missing or already seen task),
+  and, for a validator, `changed_after_validation` when anything but the ledger changed
   after `implemented` (`validation_unread` when its reading counted from another commit); then the
   open round: `validation_open` (someone else delivers), `validation_unmet` / `validation_pending`
   (its items). A node's `PresentResult` is refused with that code: the refusals about commits come
