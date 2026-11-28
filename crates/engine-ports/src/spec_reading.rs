@@ -127,7 +127,7 @@ pub struct GitHubBase {
 }
 
 pub fn read_delivery(port: &dyn SpecWorktrees, state: &DomainState, task_id: &TaskId, tips: &BTreeMap<PrId, GitHubBase>) -> Result<Vec<CommitReading>, String> {
-    let Some(task) = state.tasks.get(task_id).filter(|task| task.stages.staged) else { return Ok(vec![]) };
+    let Some(task) = state.tasks.get(task_id).filter(|task| task.gated()) else { return Ok(vec![]) };
     let Some(root) = port.own(state, task_id) else {
         return if state.open_prs(task).next().is_none() { Ok(vec![]) } else { Err("the task's worktree is gone, so its pull request cannot be read".into()) };
     };
@@ -147,7 +147,7 @@ pub fn read_delivery(port: &dyn SpecWorktrees, state: &DomainState, task_id: &Ta
 /// What Alondra reads for a delivery it holds for `task_id`: each commit of its open pull requests
 /// it has not read yet, against the commit GitHub reports its base branch at, or why it cannot.
 pub fn read_held(port: &dyn SpecWorktrees, state: &DomainState, task_id: &TaskId, tips: &BTreeMap<PrId, GitHubBase>) -> Vec<CommitReading> {
-    let Some(task) = state.tasks.get(task_id).filter(|task| task.stages.staged) else { return vec![] };
+    let Some(task) = state.tasks.get(task_id).filter(|task| task.gated()) else { return vec![] };
     let root = port.own(state, task_id);
     let allowed = state.allowed_specs(task);
     state.open_prs(task).filter(|pr| task.validation.reading_of(&pr.head, false).is_none()).map(|pr| {

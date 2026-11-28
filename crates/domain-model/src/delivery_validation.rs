@@ -1,4 +1,5 @@
-//! The one guard between a task in stages and its delivery. Alondra reads each commit a delivery
+//! The one guard between a task in stages, or a task without stages whose specs the user approved,
+//! and its delivery. Alondra reads each commit a delivery
 //! carries with git and the spec engine and records what it read as a [`CommitReading`]: facts,
 //! never a decision. Whatever delivers the task (its node, or Alondra delivering its open pull
 //! request for it), the lifecycle records the delivery only when [`DomainState::delivery_check`]
@@ -88,11 +89,67 @@ impl CommitReading {
     }
 }
 
+impl Task {
+    /// A task without stages whose specs the user approved: the agent that does its work validates
+    /// it against them, with the same round and the same gate as a task in stages.
+    pub fn validates_itself(&self) -> bool {
+        !self.stages.staged && self.specs.approved.is_some()
+    }
+
+    /// Whether its deliveries pass the guard of its validation.
+    pub fn gated(&self) -> bool {
+        self.stages.staged || self.validates_itself()
+    }
+}
+
+/// Who presents a delivery, as its refusal speaks to them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Deliverer {
+    pub role: Option<ExecutionRole>,
+    pub staged: bool,
+    /// The agent of a task without stages, which validates its own work.
+    pub itself: bool,
+    /// That agent has a round of its own open.
+    pub validating: bool,
+}
+
+impl Deliverer {
+    pub fn of(task: &Task) -> Self {
+        let itself = task.validates_itself();
+        let validating = itself && task.validation.current().is_some_and(|round| round.state == RoundState::Validating);
+        Self { role: task.stages.role(), staged: task.stages.staged, itself, validating }
+    }
+
+    /// Whether it validates the work it delivers now.
+    pub fn validates(&self) -> bool {
+        self.role == Some(ExecutionRole::Validator) || self.validating
+    }
+}
+
+/// What a delivery whose branch holds spec files the user did not approve is told, by whether its
+/// task has stages.
+pub fn specs_differ_text(unapproved: &[String], other: &[String], staged: bool) -> String {
+    let mut parts = vec![];
+    if !unapproved.is_empty() {
+        parts.push(format!("these spec files changed without the user's approval: {}", listed(unapproved)));
+    }
+    if !other.is_empty() {
+        parts.push(format!("these approved spec files are not committed exactly as approved: {}", listed(other)));
+    }
+    let way_out = if staged {
+        "In a project with specs only the user changes them, turning them off included: commit each file as it was on the base branch, or as Alondra wrote it when the user approved it; a change the work needs goes through request_spec_change (implementer) or a new plan."
+    } else {
+        "In a project with specs only the user changes them, turning them off included. To keep these changes, propose each file as your branch holds it with propose_specs and present a plan: the user approves them on the plan's card and you go on in this same task, then validate your work against them. Otherwise commit each file as it was on the base branch, or as Alondra wrote it when the user approved it."
+    };
+    format!("Nothing was presented: on the delivered commit {}. {way_out}", parts.join("; "))
+}
+
 /// Where a delivery of a task in stages stands against its validation. Only `NotGated` and
 /// `Validated` let the lifecycle record it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DeliveryCheck {
-    /// The task is not in stages, or no delivered commit is of a project that uses specs.
+    /// The task is not in stages and validates nothing itself, or no delivered commit is of a
+    /// project that uses specs.
     NotGated,
     Validated,
     /// Alondra has no current reading of these commits.
@@ -139,9 +196,14 @@ impl DeliveryCheck {
         matches!(self, Self::RoundOpen | Self::Unmet(_) | Self::RoundOwed(_))
     }
 
-    /// Why the delivery is refused, said to whoever delivers in `role`.
+    /// Why the delivery is refused, said to whoever delivers in `role` in a task in stages.
     pub fn refusal(&self, role: Option<ExecutionRole>) -> Option<DomainError> {
-        let validator = role == Some(ExecutionRole::Validator);
+        self.refusal_to(Deliverer { role, staged: true, itself: false, validating: false })
+    }
+
+    /// Why the delivery is refused, said to `who`.
+    pub fn refusal_to(&self, who: Deliverer) -> Option<DomainError> {
+        let validator = who.validates();
         let (code, message) = match self {
             Self::NotGated | Self::Validated => return None,
             Self::Unread(commits) => ("validation_unread", format!(
@@ -152,17 +214,7 @@ impl DeliveryCheck {
             Self::OnBase(commits) => ("commit_on_base", format!(
                 "Nothing was presented: the delivered commit ({}) is already on its pull request's base branch as GitHub reports it, so nothing in it is the task's work. Push the task's commits to its pull request and present it again.",
                 listed(commits))),
-            Self::SpecsDiffer { unapproved, other } => ("specs_differ", {
-                let mut parts = vec![];
-                if !unapproved.is_empty() {
-                    parts.push(format!("these spec files changed without the user's approval: {}", listed(unapproved)));
-                }
-                if !other.is_empty() {
-                    parts.push(format!("these approved spec files are not committed exactly as approved: {}", listed(other)));
-                }
-                format!("Nothing was presented: on the delivered commit {}. In a project with specs only the user changes them, turning them off included: commit each file as it was on the base branch, or as Alondra wrote it when the user approved it; a change the work needs goes through request_spec_change (implementer) or a new plan.",
-                    parts.join("; "))
-            }),
+            Self::SpecsDiffer { unapproved, other } => ("specs_differ", specs_differ_text(unapproved, other, who.staged)),
             Self::SpecChangeOpen => ("spec_change_open",
                 "Nothing was presented: a change of the specs still waits for its author or the user. The work is delivered once it is settled.".to_owned()),
             Self::RoundOpen => ("validation_open", "A validator checks this work now: end your turn, it delivers once every check passes".to_owned()),
@@ -170,6 +222,9 @@ impl DeliveryCheck {
                 "These validations of the round are not met: {}. Send the work back with end_validation and your findings instead of delivering it", listed(items))),
             Self::RoundOwed(items) => ("validation_pending", format!(
                 "These validations of the round are not recorded yet: {}. Run each and record it with record_validation before delivering", listed(items))),
+            Self::Listed { items, problems, .. } if who.itself && !validator => ("validation_required", format!(
+                "Nothing was presented: the spec engine lists what is not validated on your commit ({}). Validate the work yourself: commit it, call ready_for_validation, then run and judge each item it lists, record each with record_validation, commit only the ledger and deliver again.",
+                listed(named(items).iter().chain(problems)))),
             Self::Listed { items, problems, .. } if !validator => ("validation_required", format!(
                 "Nothing was presented: the spec engine lists what is not validated on your commit ({}). In a task in stages a validator checks it: commit your work and call ready_for_validation.",
                 listed(named(items).iter().chain(problems)))),
@@ -220,8 +275,8 @@ fn delivered_commits(task: &Task, targets: &[DeliveryTarget]) -> Vec<(String, Op
 impl DomainState {
     /// Where a delivery of `task_id` carrying `targets` stands against its validation.
     pub fn delivery_check(&self, task_id: &TaskId, targets: &[DeliveryTarget]) -> DeliveryCheck {
-        let Some(task) = self.tasks.get(task_id).filter(|task| task.stages.staged) else { return DeliveryCheck::NotGated };
-        let role = task.stages.role();
+        let Some(task) = self.tasks.get(task_id).filter(|task| task.gated()) else { return DeliveryCheck::NotGated };
+        let validator = Deliverer::of(task).validates();
         let commits = delivered_commits(task, targets);
         let unread: Vec<String> = commits.iter().filter(|(commit, pr)| task.validation.reading_of(commit, pr.is_none()).is_none()).map(|(commit, _)| commit.clone()).collect();
         if !unread.is_empty() {
@@ -273,7 +328,7 @@ impl DomainState {
             if !items.is_empty() || !reading.stray.is_empty() {
                 return DeliveryCheck::Unrecorded { commit: reading.commit.clone(), items, stray: reading.stray.clone() };
             }
-            if role == Some(ExecutionRole::Validator) && let Some(round) = task.validation.current() {
+            if validator && let Some(round) = task.validation.current() {
                 if reading.since.as_deref() != Some(round.implemented.as_str()) {
                     return DeliveryCheck::Unread(vec![reading.commit.clone()]);
                 }
@@ -286,7 +341,7 @@ impl DomainState {
             return DeliveryCheck::SpecChangeOpen;
         }
         if let Some(round) = task.validation.open_round() {
-            if role != Some(ExecutionRole::Validator) {
+            if !validator {
                 return DeliveryCheck::RoundOpen;
             }
             let unmet: Vec<String> = round.items.iter().filter(|item| item.state == ValidationState::Unmet).map(|item| format!("{} ({})", item.subject, item.kind.as_str())).collect();
@@ -308,8 +363,8 @@ impl DomainState {
     /// only when its validation admits it.
     pub fn delivery_admitted(&self, task_id: &TaskId, delivery: &crate::InteractionId) -> Result<(), DomainError> {
         let Some(crate::InteractionPayload::Delivery { targets, .. }) = self.interactions.get(delivery).map(|i| &i.payload) else { return Ok(()) };
-        let role = self.tasks.get(task_id).and_then(|task| task.stages.role());
-        match self.delivery_check(task_id, targets).refusal(role) {
+        let who = self.tasks.get(task_id).map(Deliverer::of).unwrap_or_default();
+        match self.delivery_check(task_id, targets).refusal_to(who) {
             Some(error) => Err(error),
             None => Ok(()),
         }
@@ -336,6 +391,12 @@ impl DomainState {
                 return Ok(());
             }
             DeliveryCheck::SpecChangeOpen => return Ok(()),
+            _ if !task.stages.staged => {
+                let Some(refusal) = check.refusal_to(Deliverer::of(task)) else { return Ok(()) };
+                let input = self.next_input(task_id);
+                let text = format!("Alondra did not deliver your open pull request: {}", refusal.message);
+                return self.decide(lifecycles, task_id, LifecycleRecord::Told { input, text: Some(text), answers: None });
+            }
             DeliveryCheck::RoundOpen | DeliveryCheck::Unmet(_) | DeliveryCheck::RoundOwed(_) => {
                 let round = task.validation.current().map_or(0, |round| round.number);
                 handover(ExecutionRole::Validator, HandoverCause::ValidatorRetry { round })

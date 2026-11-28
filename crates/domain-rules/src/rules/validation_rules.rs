@@ -40,13 +40,19 @@ fn open_validation_round<'a>(domain: &'a DomainState, task_id: &TaskId) -> Resul
 }
 
 /// The implementer says its work is ready: a new execution, the validator, checks what the
-/// spec engine lists on its commit.
+/// spec engine lists on its commit. In a task without stages whose specs the user approved, the
+/// same agent validates it: its round opens at once, with that agent as its validator.
 pub(crate) fn ready_for_validation(domain: &mut DomainState, actor: &Actor, task_id: &TaskId, head: &str, items: &[ValidationItem], scope: &[String], lifecycles: &mut Lifecycles) -> Result<()> {
     role_allows(domain, actor, task_id, RoleTool::ReadyForValidation)?;
     let task = domain.assigned(actor, task_id)?;
-    if task.stages.role() != Some(ExecutionRole::Implementer) {
+    let itself = task.validates_itself();
+    if task.stages.role() != Some(ExecutionRole::Implementer) && !itself {
         return refuse("validation_needs_stages", "task_id",
-            "Only the implementer of a task in stages hands its work to a validator. Deliver with present_result as usual");
+            "Only the implementer of a task in stages, or the agent of a task whose specs the user approved, asks for validation. Deliver with present_result as usual");
+    }
+    if itself && task.validation.current().is_some_and(|round| round.state == RoundState::Validating) {
+        return refuse("validation_open", "task_id",
+            "Your round of validation is open: validate what it lists, record each with record_validation, then deliver, or end it with end_validation");
     }
     if task.stages.handover.is_some() {
         return refuse("handover_pending", "task_id", "This task already passes to another agent: end your turn");
@@ -80,8 +86,13 @@ pub(crate) fn ready_for_validation(domain: &mut DomainState, actor: &Actor, task
         findings: None,
         retried: false,
     };
+    let generation = itself.then(|| task.stages.runs.last().map(|run| run.generation)).flatten();
+    let round = if itself { ValidationRound { state: RoundState::Validating, generation: generation.or(Some(0)), ..round } } else { round };
     let task = domain.tasks.get_mut(task_id).expect("assigned");
     task.validation.push_round(round);
+    if itself {
+        return Ok(());
+    }
     task.stages.handover = Some(handover(ExecutionRole::Validator, HandoverCause::ReadyForValidation { round: number }));
     let input = domain.next_input(task_id);
     domain.decide(lifecycles, task_id, LifecycleRecord::Told { input, text: Some(stage_input(ExecutionRole::Validator)), answers: None })
@@ -173,6 +184,13 @@ pub(crate) fn end_validation(domain: &mut DomainState, actor: &Actor, task_id: &
             let body = SpecCard::ValidationExhausted { task: task_id.0.clone(), round: number, specs };
             return raise_spec_card(domain, &card_id, task_id, &body, effects, created);
         }
+        if task.validates_itself() {
+            let unmet: Vec<String> = round_unmet(task);
+            let text = format!(
+                "Your round of validation ended with what is not met: {}. Fix it in your work, commit, and call ready_for_validation again to validate it once more. Your findings: {findings}",
+                unmet.join(", "));
+            return tell(domain, task_id, text, lifecycles);
+        }
         task.stages.handover = Some(handover(ExecutionRole::Implementer, HandoverCause::ValidationFailed { round: number }));
     } else {
         round.state = RoundState::Interrupted;
@@ -190,6 +208,11 @@ pub(crate) fn end_validation(domain: &mut DomainState, actor: &Actor, task_id: &
             return raise_spec_card(domain, &card_id, task_id, &body, effects, created);
         }
         round.retried = true;
+        if task.validates_itself() {
+            let text = format!(
+                "Your round of validation ended without running all of it: {findings}. Fix what kept it from running, commit, and call ready_for_validation again.");
+            return tell(domain, task_id, text, lifecycles);
+        }
         task.stages.handover = Some(handover(ExecutionRole::Validator, HandoverCause::ValidatorRetry { round: number }));
     }
     let to = domain.tasks[task_id].stages.handover.as_ref().expect("set above").to;
@@ -208,7 +231,7 @@ pub(crate) fn record_delivered_validation(domain: &mut DomainState, actor: &Acto
 /// The validator delivered: its round is over.
 pub(crate) fn validator_delivered(domain: &mut DomainState, task_id: &TaskId) {
     let Some(task) = domain.tasks.get_mut(task_id) else { return };
-    if task.stages.role() != Some(ExecutionRole::Validator) {
+    if task.stages.role() != Some(ExecutionRole::Validator) && !task.validates_itself() {
         return;
     }
     if let Some(round) = task.validation.current_mut().filter(|round| round.state == RoundState::Validating) {
@@ -263,6 +286,14 @@ pub(crate) fn settle_validation_card(domain: &mut DomainState, actor: &Actor, ca
     let task = domain.tasks.get_mut(&task_id).expect("checked above");
     task.validation.exhausted = None;
     task.validation.failed = 0;
+    if task.validates_itself() {
+        let text = match option {
+            spec_card::STRONGER | spec_card::VALIDATE_AGAIN => format!("The user asked you to go on with the work and validate it again.{said}\n\n{failing}"),
+            spec_card::CHANGE_SPECS => format!("The user chose to change the specs these checks rest on: draft the change with request_spec_change.{said}\n\n{failing}"),
+            _ => return Ok(()),
+        };
+        return tell(domain, &task_id, text, lifecycles);
+    }
     let next = match option {
         spec_card::STRONGER => {
             if let Some(author) = task.stages.selections.get(&ExecutionRole::Author).cloned() {
@@ -318,4 +349,10 @@ pub(crate) fn task_scenario(domain: &DomainState, task_id: &TaskId, id: &str) ->
         .any(|read| read.id == spec && read.scenarios.iter().any(|s| s.id == scenario));
     approved || task.validation.rounds.iter().flat_map(|round| &round.items).any(|item| item.kind != ValidationKind::Suite && item.subject == id)
         || task.validation.delivered.iter().flat_map(|delivered| &delivered.specs).flat_map(|spec| &spec.scenarios).any(|s| s.id == id)
+}
+
+/// The validations of the task's current round found not met, by subject.
+fn round_unmet(task: &Task) -> Vec<String> {
+    task.validation.current().into_iter().flat_map(|round| &round.items)
+        .filter(|item| item.state == ValidationState::Unmet).map(|item| item.subject.clone()).collect()
 }

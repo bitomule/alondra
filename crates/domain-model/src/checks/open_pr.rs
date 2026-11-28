@@ -3,6 +3,8 @@
 //! the close itself delivers the PR to the user, who merges or closes it: nothing waits for GitHub.
 //! A close an older build left waiting is settled on what GitHub reports: a merged PR finishes the
 //! task, a closed one lets it be cancelled, and an open one reaches the user as a delivery.
+//! A task another task continues hands that task its open PRs, so cancelling it neither delivers
+//! nor closes them, and it never gets a new agent while the task that continues it is not finished.
 use super::*;
 use crate::open_pr_delivery::{OPEN_PR_DELIVERY_PREFIX, OpenPrDelivery, PrReadiness};
 
@@ -12,9 +14,66 @@ pub fn cancelled_pr_comment(title: &str) -> String {
 }
 
 impl DomainState {
+    /// Whether a task not yet finished works on `branch`: the task it was made for, or a task that
+    /// continues it in the worktree it inherited.
     pub fn branch_has_live_task(&self, branch: &str) -> bool {
-        branch.strip_prefix("worktree-").is_some_and(|id|
-            self.tasks.get(&TaskId::from(id)).is_some_and(|task| !task.state.terminal()))
+        let named = branch.strip_prefix("worktree-").is_some_and(|id|
+            self.tasks.get(&TaskId::from(id)).is_some_and(|task| !task.state.terminal()));
+        named || self.tasks.values().filter(|task| !task.state.terminal()).any(|task| task.open_worktrees()
+            .any(|(_, worktree)| worktree.origin == WorktreeOrigin::Inherited && worktree.branch.as_deref() == Some(branch)))
+    }
+
+    /// The task not yet finished that continues `task`, the latest created first.
+    pub fn live_continuation(&self, task: &TaskId) -> Option<&Task> {
+        self.tasks.values()
+            .filter(|next| next.continues.as_ref() == Some(task) && !next.state.terminal())
+            .max_by_key(|next| next.created_revision)
+    }
+
+    /// A task that a task not yet finished continues never gets a new agent.
+    pub fn not_continued(&self, task: &TaskId) -> Result<()> {
+        let Some(next) = self.live_continuation(task) else { return Ok(()) };
+        refuse("task_continued", "task_id", &format!(
+            "Task {task} is continued by task {} «{}», which is not finished: its work, worktree and pull requests are that task's now, so no new agent takes {task}. Send what is left to task {}",
+            next.id, next.title, next.id))
+    }
+
+    /// `pr` leaves the task that holds it for `to`, with its history: the earlier owner no longer
+    /// names it, delivers it or closes it.
+    pub fn release_pr(&mut self, pr: &PrId, to: &TaskId) {
+        let Some(from) = self.pull_requests.get(pr).map(|pr| pr.task_id.clone()) else { return };
+        self.invalidate(&from);
+        let owners = self.pr_task_history.entry(pr.clone()).or_default();
+        owners.insert(from.clone());
+        owners.insert(to.clone());
+        if let Some(old) = self.tasks.get_mut(&from) {
+            if old.pr_id.as_ref() == Some(pr) {
+                old.pr_id = old.later_prs.pop();
+            }
+            old.later_prs.retain(|id| id != pr);
+            old.open_pr = None;
+        }
+    }
+
+    /// Every open PR of `from` becomes `to`'s, as it is on GitHub.
+    pub fn hand_open_prs(&mut self, from: &TaskId, to: &TaskId) {
+        let Some(task) = self.tasks.get(from) else { return };
+        let open: Vec<PrId> = self.open_prs(task).map(|pr| pr.id.clone()).collect();
+        for pr in open {
+            self.release_pr(&pr, to);
+            let review_prs = self.tasks.get(to).is_some_and(|task| task.review_prs);
+            let moved = self.pull_requests.get_mut(&pr).expect("an open PR of the task");
+            moved.task_id = to.clone();
+            if moved.review.is_none() && review_prs {
+                moved.review = Some(PullRequestReview { decisions: vec![] });
+            }
+            let next = self.tasks.get_mut(to).expect("the continuing task exists");
+            if next.pr_id.is_none() {
+                next.pr_id = Some(pr);
+            } else if next.pr_id.as_ref() != Some(&pr) && !next.later_prs.contains(&pr) {
+                next.later_prs.push(pr);
+            }
+        }
     }
 
 
@@ -36,6 +95,9 @@ impl DomainState {
             self.tasks.get_mut(task).unwrap().pending_user_inputs.clear();
         }
         self.tasks.get_mut(task).unwrap().paused_in_queue = None;
+        if let Some(next) = self.live_continuation(task).map(|next| next.id.clone()) {
+            self.hand_open_prs(task, &next);
+        }
         let Some(pr) = self.open_pr_of(task).cloned() else {
             return self.cancel(task, effects, lifecycles);
         };

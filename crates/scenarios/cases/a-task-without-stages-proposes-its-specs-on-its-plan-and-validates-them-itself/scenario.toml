@@ -1,0 +1,174 @@
+name = "in a project with specs, a task without stages that wrote a spec is refused at delivery with specs_differ, proposes the spec with its plan, the user approves it there, and the same agent validates the work itself and delivers it marked as validated by the agent that did it"
+max_virtual = "3h"
+
+[[step]]
+do = "request"
+text = "Say how much of an order is left to refund"
+task = "t1"
+title = "Say what is left to refund"
+
+[[step]]
+do = "node"
+task = "t1"
+model = "demo-model"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "worktree"
+task = "t1"
+
+[[step.base]]
+path = "alondra.toml"
+text = "format = 1\n\n[specs]\nenabled = true\n"
+
+[[step.base]]
+path = "specs/billing/boundary.toml"
+text = "id = \"billing\"\nowns = [\"crates/billing/**\"]\n\n[[suite]]\nid = \"unit\"\nrun = [\"true\"]\ntests = [\"crates/billing/tests/*.rs\"]\n"
+
+[[step.base]]
+path = "specs/billing/partial.feature"
+text = "@spec:billing.partial\nFeature: Partial refunds\n  Any amount up to what is left of the order comes back.\n\n  @id:part\n  Scenario: Part of an order\n    Given a paid order of 30 EUR\n    When 10 EUR are refunded\n    Then the customer receives 10 EUR\n\n  @id:alone @boundary:dependencies\n  Scenario: Billing uses no other component\n    Given the billing crate\n    When its dependencies are listed\n    Then none is another component\n"
+
+[[step.base]]
+path = "crates/billing/tests/refunds.rs"
+text = "// spec: billing.partial/part\n#[test]\nfn part() { assert_eq!(refund(30, 10), 10); }\n\n// spec: billing.partial/alone\n#[test]\nfn alone() { assert!(dependencies().is_empty()); }\n"
+
+[[step.base]]
+path = "crates/billing/src/lib.rs"
+text = "pub fn refund(paid: u32, part: u32) -> u32 { part.min(paid) }\n"
+
+[[step]]
+do = "commit"
+task = "t1"
+message = "Say what is left to refund"
+
+[[step.files]]
+path = "specs/billing/partial.feature"
+text = "@spec:billing.partial\nFeature: Partial refunds\n  Any amount up to what is left of the order comes back.\n\n  @id:part\n  Scenario: Part of an order\n    Given a paid order of 30 EUR\n    When 10 EUR are refunded\n    Then the customer receives 10 EUR\n    And 20 EUR are left to refund\n\n  @id:alone @boundary:dependencies\n  Scenario: Billing uses no other component\n    Given the billing crate\n    When its dependencies are listed\n    Then none is another component\n"
+
+[[step.files]]
+path = "crates/billing/src/lib.rs"
+text = "pub fn refund(paid: u32, part: u32) -> u32 { part.min(paid) }\npub fn left(paid: u32, part: u32) -> u32 { paid - part.min(paid) }\n"
+
+[[step]]
+do = "present"
+task = "t1"
+id = "result-unapproved"
+text = "What is left to refund"
+body = "The order says what is left to refund."
+refused = "specs_differ"
+
+[[step]]
+do = "propose_specs"
+task = "t1"
+level = "light"
+
+[[step.files]]
+path = "specs/billing/partial.feature"
+text = "@spec:billing.partial\nFeature: Partial refunds\n  Any amount up to what is left of the order comes back.\n\n  @id:part\n  Scenario: Part of an order\n    Given a paid order of 30 EUR\n    When 10 EUR are refunded\n    Then the customer receives 10 EUR\n    And 20 EUR are left to refund\n\n  @id:alone @boundary:dependencies\n  Scenario: Billing uses no other component\n    Given the billing crate\n    When its dependencies are listed\n    Then none is another component\n"
+
+[[step]]
+do = "plan"
+task = "t1"
+request = "own-plan"
+plan = "# Say what is left to refund\n\n- [ ] Say what is left after a partial refund (billing.partial/part)"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "press"
+presentation = "decision-t1-1-6"
+action = "accept"
+screen = "home"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "turn_end"
+task = "t1"
+
+[[step]]
+do = "rest"
+max = "10m"
+
+[[step]]
+do = "checkpoint"
+name = "approved-on-its-own-plan"
+
+[[step.expect]]
+check = "worktree_file"
+task = "t1"
+path = "specs/billing/partial.feature"
+text = "@spec:billing.partial\nFeature: Partial refunds\n  Any amount up to what is left of the order comes back.\n\n  @id:part\n  Scenario: Part of an order\n    Given a paid order of 30 EUR\n    When 10 EUR are refunded\n    Then the customer receives 10 EUR\n    And 20 EUR are left to refund\n\n  @id:alone @boundary:dependencies\n  Scenario: Billing uses no other component\n    Given the billing crate\n    When its dependencies are listed\n    Then none is another component\n"
+
+[[step.expect]]
+check = "hosts"
+task = "t1"
+started = 1
+running = 1
+sessions = 1
+
+[[step]]
+do = "ready_for_validation"
+task = "t1"
+
+[[step]]
+do = "spec_ledger"
+task = "t1"
+message = "Record the validation"
+
+[[step]]
+do = "record_validation"
+task = "t1"
+subject = "billing/unit"
+check = "suite"
+verdict = "met"
+
+[[step]]
+do = "record_validation"
+task = "t1"
+subject = "billing.partial/part"
+check = "adequate"
+verdict = "met"
+
+[[step]]
+do = "record_validation"
+task = "t1"
+subject = "billing.partial/alone"
+check = "adequate"
+verdict = "met"
+
+[[step]]
+do = "present"
+task = "t1"
+id = "result-1"
+text = "What is left to refund"
+body = "The order says what is left to refund."
+scenarios = ["billing.partial/part"]
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "checkpoint"
+name = "validated-by-the-same-agent"
+
+[[step.expect]]
+check = "view_shows"
+screen = "card:result-1"
+text = "Validated by the same agent that did the work"
+
+[[step.expect]]
+check = "hosts"
+task = "t1"
+started = 1
+running = 1
+sessions = 1

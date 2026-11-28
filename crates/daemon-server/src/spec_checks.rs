@@ -142,15 +142,5 @@ pub(crate) fn delivery_refusal(domain: &dyn Runtime, state: &DomainState, task_i
     if unapproved.is_empty() && other.is_empty() {
         return None;
     }
-    let mut parts = vec![];
-    if !unapproved.is_empty() {
-        parts.push(format!("these spec files changed without the user's approval: {}", unapproved.join(", ")));
-    }
-    if !other.is_empty() {
-        parts.push(format!("these approved spec files are not committed exactly as approved: {}", other.join(", ")));
-    }
-    Some(DomainError::new("specs_differ", format!(
-        "Nothing was presented: {}. In a project with specs only the user changes them: commit each file as it was on the base branch, or as \
-         Alondra wrote it when the user approved it; a change the work needs goes through request_spec_change (implementer) or a new plan.",
-        parts.join("; "))))
+    Some(DomainError::new("specs_differ", alondra_domain_model::specs_differ_text(&unapproved, &other, task.stages.staged)))
 }

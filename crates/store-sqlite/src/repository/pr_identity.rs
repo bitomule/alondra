@@ -18,7 +18,8 @@ const INDEXES: [(&str, &str); 2] = [
 const TRIGGERS: [(&str, &str); 7] = [
     ("immutable_pr_ownership", "CREATE TRIGGER immutable_pr_ownership BEFORE UPDATE ON pull_requests
 WHEN NEW.id<>OLD.id OR NEW.host<>OLD.host OR NEW.number<>OLD.number
-OR (NEW.task_id<>OLD.task_id AND (SELECT state FROM tasks WHERE id=OLD.task_id) NOT IN('done','cancelled'))
+OR (NEW.task_id<>OLD.task_id AND (SELECT state FROM tasks WHERE id=OLD.task_id) NOT IN('done','cancelled')
+    AND NOT EXISTS(SELECT 1 FROM task_continuations WHERE task_id=NEW.task_id AND continues=OLD.task_id))
 BEGIN SELECT RAISE(ABORT,'PR identity and live ownership are immutable'); END"),
     ("pr_address_moves_with_alias", "CREATE TRIGGER pr_address_moves_with_alias BEFORE UPDATE OF repository ON pull_requests
 WHEN NEW.repository<>OLD.repository AND NOT EXISTS(SELECT 1 FROM pull_request_aliases WHERE pr_id=OLD.id AND repository=OLD.repository)
@@ -62,6 +63,7 @@ pub(crate) fn upgrade(tx: &rusqlite::Transaction<'_>) -> Result<()> {
         tx.execute_batch(&format!("INSERT INTO pull_requests({shared}) SELECT {shared} FROM pull_requests_copy; DROP TABLE pull_requests_copy;"))?;
     }
     tx.execute_batch(ALIASES)?;
+    tx.execute_batch(crate::TASK_CONTINUATIONS)?;
     for (name, definition) in INDEXES {
         crate::refresh_schema_object(tx, "index", name, definition)?;
     }

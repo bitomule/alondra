@@ -1,0 +1,86 @@
+name = "a task that continues another takes its open pull request when it is created; the orchestrator then cancels the original with no card raised for it, the pull request stays open with the continuation, and the original never gets a new node"
+max_virtual = "2h"
+
+[[step]]
+do = "request"
+text = "Round refunds to the cent"
+task = "t1"
+title = "Round refunds to the cent"
+
+[[step]]
+do = "node"
+task = "t1"
+model = "demo-model"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "worktree"
+task = "t1"
+
+[[step]]
+do = "github"
+event = "open_pr"
+number = 7
+head = "refunds"
+base = "main"
+
+[[step]]
+do = "register_pr"
+task = "t1"
+number = 7
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "task"
+id = "t2"
+title = "Carry on rounding refunds to the cent"
+continues = "t1"
+
+[[step]]
+do = "checkpoint"
+name = "the-continuation-takes-the-pull-request"
+pushes = true
+
+[[step.expect]]
+check = "pr_owner"
+pr = 7
+task = "t2"
+
+[[step]]
+do = "orchestrator_cancel"
+task = "t1"
+
+[[step]]
+do = "rest"
+max = "10m"
+
+[[step]]
+do = "checkpoint"
+name = "cancelled-with-no-card"
+pushes = true
+
+[[step.expect]]
+check = "no_pushes"
+delivery = "alert"
+
+[[step.expect]]
+check = "pr_owner"
+pr = 7
+task = "t2"
+
+[[step.expect]]
+check = "pr_state_in"
+repository = "demo/app"
+pr = 7
+state = "open"
+
+[[step]]
+do = "orchestrator_assign"
+task = "t1"
+refused = "task_continued"

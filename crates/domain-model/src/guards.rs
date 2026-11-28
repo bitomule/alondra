@@ -430,7 +430,7 @@ impl DomainState {
         if self.active(task_id)?.ending() {
             return fail("task_not_active", "Task is already ending");
         }
-        if matches!(actor, Actor::User { .. }) || self.open_pr_of(task_id).is_none() {
+        if matches!(actor, Actor::User { .. }) || self.open_pr_of(task_id).is_none() || self.live_continuation(task_id).is_some() {
             return Ok(());
         }
         self.delivered_pr_stays(actor, task_id, self.lifecycle_of(task_id)?.phase())

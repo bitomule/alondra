@@ -675,7 +675,13 @@ pub async fn launch_guarded(domain: &dyn Runtime, home: &Path, body: LaunchBody,
     };
     let first_run = !prior_native && reopening.is_none() && task.stages.runs.is_empty();
     let staged = body.stages.as_ref().is_some_and(|choice| choice.staged) && first_run;
-    let mission = if staged { format!("{mission}\n\n{}", alondra_engine_kernel::launches::AUTHOR_MISSION) } else { mission };
+    let mission = if staged {
+        format!("{mission}\n\n{}", alondra_engine_kernel::launches::AUTHOR_MISSION)
+    } else {
+        let settings = std::fs::read(Path::new(&cwd).join(alondra_domain_model::specs::SETTINGS_PATH)).ok();
+        let chose_stages = body.stages.as_ref().is_some_and(|choice| choice.staged) || task.stages.staged;
+        alondra_domain_model::unstaged_mission(&mission, chose_stages, first_run, settings.as_deref())
+    };
     let prompt = crate::domain_orchestrator_tools::producer_prompt(&mission, crate::domain_orchestrator_tools::MissionAuthor::Orchestrator, &resolved, &task.id, body.approach.unwrap_or_default());
     if domain.sdk().is_none() {
         return Err(DomainError::new("unavailable", crate::sdk_backend::NO_HOST));

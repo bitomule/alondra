@@ -1516,6 +1516,9 @@ impl DomainState {
             .collect()
     }
     pub fn admit_node(&mut self, task: &TaskId, node: &AgentId, lifecycles: &mut Lifecycles) -> Result<()> {
+        if self.tasks.get(task).is_some_and(|t| t.agent_id.as_ref() != Some(node)) {
+            self.not_continued(task)?;
+        }
         let waited = self.awaited_by(self.lifecycle(lifecycles, task)?);
         if !waited.is_empty() {
             return Err(DomainError::new("dependency_not_done", format!(
