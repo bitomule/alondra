@@ -523,6 +523,51 @@ fn the_completed_header_offers_clear_completed_and_shift_a_empties_it_at_once() 
     assert!(!after.contains(NIGHTLY) && !after.contains("COMPLETADAS"), "the page opened before clearing does not stay: {after}");
 }
 
+/// `task` waits on a plan card that proposes one spec file, the state in which its screen offers the editor.
+fn with_a_plan_proposing_specs(domain: &mut DomainState, task: &str, agent: &str) {
+    use alondra_domain_model::specs::SpecDirs;
+    use alondra_domain_model::{Author, CardKind, CardSpec, ContentKind, Hold, Interaction, InteractionPayload, Recipient, Scope, SpecCheck, SpecDraft, SpecLevel, SpecMode};
+    let plan = "# Refund sheet\n\n- [ ] Show what is left to refund";
+    domain.interactions.insert("plan-1".into(), Interaction {
+        id: "plan-1".into(),
+        scope: Scope::Task { task_id: task.into() },
+        author: Author::Agent { agent_id: agent.into() },
+        recipient: Recipient::User,
+        body: plan.into(),
+        blocking: true,
+        subject: None,
+        payload: InteractionPayload::Question { options: Hold::Plan.options(), answer: None },
+        revision: 1,
+        order: 1,
+        withdrawn: false,
+        card: CardSpec::new(CardKind::Review, "Approve the plan to build the refund sheet").content(ContentKind::Plan, plan),
+        attachments: vec![],
+        system_card: None,
+        clarification: None,
+        snoozed_until: None,
+        resurfaced_at_revision: None,
+        shortened: false,
+    });
+    domain.holds.insert("plan-1".into(), Hold::Plan);
+    let path = "specs/billing/partial.feature";
+    let feature = "@spec:billing.partial\nFeature: Partial refunds\n\n  @id:part\n  Scenario: Part of an order\n    Given a paid order of 30 EUR\n    When 10 EUR are refunded\n    Then the customer receives 10 EUR\n";
+    let dirs = SpecDirs { specs: "specs".into(), decisions: None, reference: None };
+    let check = SpecCheck { mode: SpecMode::Committed, problems: vec![], before: [(path.to_owned(), None)].into(), dirs, ..SpecCheck::default() };
+    let files: alondra_domain_model::SpecFiles = [(path.to_owned(), Some(feature.into()))].into();
+    domain.tasks.get_mut(&TaskId::from(task)).unwrap().specs.draft = Some(SpecDraft { level: SpecLevel::Light, files, check, revision: 1, edited: false });
+}
+
+#[test]
+fn the_edit_the_specs_button_of_a_task_has_a_key_that_opens_the_editor() {
+    let (mut domain, live) = busy();
+    with_a_plan_proposing_specs(&mut domain, "t-3", "a-3");
+    let mut app = task_screen(&domain, &live, "r-3", "t-3");
+    let footer = draw::footer_keys(&app);
+    assert!(footer.iter().any(|(key, label)| key == "e" && label == "Editar las specs"), "the button shows its key: {footer:?}");
+    press(&mut app, KeyCode::Char('e'));
+    assert_eq!(app.view_navigation.last().map(String::as_str), Some("task_specs:t-3"), "the key opens the editor of the task's specs");
+}
+
 #[test]
 fn a_working_tasks_footer_names_its_real_keys() {
     let (domain, live) = busy();

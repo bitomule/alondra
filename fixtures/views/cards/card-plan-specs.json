@@ -1,0 +1,290 @@
+{
+  "protocol": 1,
+  "data_epoch": "test-epoch",
+  "view": "card",
+  "key": "card:i-1",
+  "client": "ios",
+  "version": "v35092b29ea8b80fa",
+  "cursor": "cursor-1",
+  "title": "Body 0",
+  "status": {
+    "version": "vb48aabc450a206b9",
+    "summary": "2 questions · 2 to read · 0 tasks working",
+    "summary_parts": [
+      {
+        "id": "questions",
+        "count": 2,
+        "one": "{count} question",
+        "other": "{count} questions"
+      },
+      {
+        "id": "to_read",
+        "count": 2,
+        "one": "{count} to read",
+        "other": "{count} to read"
+      },
+      {
+        "id": "working",
+        "count": 0,
+        "one": "{count} task working",
+        "other": "{count} tasks working"
+      }
+    ],
+    "badge": 3,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Inbox",
+        "value": 4
+      },
+      {
+        "id": "tasks",
+        "label": "Tasks",
+        "value": 1
+      },
+      {
+        "id": "working",
+        "label": "working",
+        "value": 0
+      },
+      {
+        "id": "needs_you",
+        "label": "waiting for you",
+        "value": 1
+      },
+      {
+        "id": "queued",
+        "label": "queued",
+        "value": 0
+      },
+      {
+        "id": "paused",
+        "label": "paused",
+        "value": 0
+      },
+      {
+        "id": "other_waiting",
+        "label": "waiting",
+        "value": 0
+      }
+    ],
+    "gauges": [],
+    "orchestrator": {
+      "text": "idle",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "card",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "card",
+          "id": "i-1",
+          "kind": "review",
+          "need": "Review the plan",
+          "title_is_separate": true,
+          "meta": "Build a feature",
+          "reply": {
+            "id": "changes:i-1@1",
+            "label": "Request changes",
+            "style": "secondary",
+            "role": "neutral",
+            "presentation": "button",
+            "input": {
+              "kind": "text",
+              "placeholder": "Describe the changes",
+              "required": true,
+              "multiline": true
+            },
+            "attachments": true,
+            "comments": {
+              "kind": "blocks"
+            },
+            "enabled": true,
+            "stamp": "Changes requested",
+            "resolves_card": true
+          },
+          "link": {
+            "kind": "view",
+            "key": "card:i-1"
+          },
+          "icon": "document",
+          "eyebrow": {
+            "text": "Review",
+            "tone": "accent"
+          },
+          "title": "Body 0",
+          "context": [
+            {
+              "icon": "task",
+              "text": "Build a feature",
+              "link": {
+                "kind": "view",
+                "key": "task:t-1"
+              },
+              "state": {
+                "text": "Needs you",
+                "tone": "warning"
+              }
+            }
+          ],
+          "state": {
+            "text": "Blocks Build a feature",
+            "tone": "warning"
+          },
+          "detail": "included",
+          "actions": [
+            {
+              "id": "accept:i-1@1",
+              "label": "Approve",
+              "style": "primary",
+              "role": "advance",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Approved",
+              "resolves_card": true
+            },
+            {
+              "id": "",
+              "label": "Edit the specs",
+              "style": "plain",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "link": {
+                "kind": "view",
+                "key": "task_specs:t-1"
+              },
+              "resolves_card": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "specs",
+      "title": "Specs",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "markdown",
+          "text": "**Level:** Light: up to 5 scenarios and low risk",
+          "truncated": false,
+          "commentable": false
+        },
+        {
+          "type": "spec_sheet",
+          "id": "spec:billing.partial",
+          "spec": "billing.partial",
+          "title": "Partial refunds",
+          "mark": {
+            "change": "new",
+            "label": "new"
+          },
+          "explanation": "Any amount up to what is left of the order comes back.",
+          "scenarios": [
+            {
+              "id": "billing.partial/part",
+              "title": "Part of an order",
+              "kind": "test",
+              "mark": {
+                "change": "new",
+                "label": "new"
+              },
+              "collapsed": false,
+              "lanes": [
+                {
+                  "kind": "given",
+                  "label": "Given",
+                  "steps": [
+                    {
+                      "text": "a paid order of 30 EUR"
+                    }
+                  ]
+                },
+                {
+                  "kind": "when",
+                  "label": "When",
+                  "steps": [
+                    {
+                      "text": "10 EUR are refunded"
+                    }
+                  ]
+                },
+                {
+                  "kind": "then",
+                  "label": "Then",
+                  "steps": [
+                    {
+                      "text": "the customer receives 10 EUR"
+                    }
+                  ]
+                }
+              ],
+              "anchor": {
+                "id": "scenario:billing.partial/part",
+                "quote": "billing.partial/part · Part of an order"
+              }
+            }
+          ],
+          "anchor": {
+            "id": "spec:billing.partial",
+            "quote": "billing.partial · Partial refunds"
+          }
+        },
+        {
+          "type": "actions",
+          "actions": [
+            {
+              "id": "",
+              "label": "Edit the specs",
+              "style": "plain",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "link": {
+                "kind": "view",
+                "key": "task_specs:t-1"
+              },
+              "resolves_card": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "context",
+      "title": "Context",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Task",
+              "value": "Build a feature",
+              "link": {
+                "kind": "view",
+                "key": "task:t-1"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

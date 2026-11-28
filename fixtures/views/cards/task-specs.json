@@ -1,0 +1,364 @@
+{
+  "protocol": 1,
+  "data_epoch": "test-epoch",
+  "view": "task_specs",
+  "key": "task_specs:t-1",
+  "client": "ios",
+  "version": "v8cd8550d00b4a6f7",
+  "cursor": "cursor-1",
+  "title": "Specs of “Build a feature”",
+  "status": {
+    "version": "vb48aabc450a206b9",
+    "summary": "2 questions · 2 to read · 0 tasks working",
+    "summary_parts": [
+      {
+        "id": "questions",
+        "count": 2,
+        "one": "{count} question",
+        "other": "{count} questions"
+      },
+      {
+        "id": "to_read",
+        "count": 2,
+        "one": "{count} to read",
+        "other": "{count} to read"
+      },
+      {
+        "id": "working",
+        "count": 0,
+        "one": "{count} task working",
+        "other": "{count} tasks working"
+      }
+    ],
+    "badge": 3,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Inbox",
+        "value": 4
+      },
+      {
+        "id": "tasks",
+        "label": "Tasks",
+        "value": 1
+      },
+      {
+        "id": "working",
+        "label": "working",
+        "value": 0
+      },
+      {
+        "id": "needs_you",
+        "label": "waiting for you",
+        "value": 1
+      },
+      {
+        "id": "queued",
+        "label": "queued",
+        "value": 0
+      },
+      {
+        "id": "paused",
+        "label": "paused",
+        "value": 0
+      },
+      {
+        "id": "other_waiting",
+        "label": "waiting",
+        "value": 0
+      }
+    ],
+    "gauges": [],
+    "orchestrator": {
+      "text": "idle",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "level",
+      "title": "Specs of the plan",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "markdown",
+          "text": "**Level:** Light: up to 5 scenarios and low risk",
+          "truncated": false,
+          "commentable": false
+        },
+        {
+          "type": "actions",
+          "actions": [
+            {
+              "id": "spec_edit:t-1@7~level",
+              "label": "Change the level",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "menu",
+              "options": [
+                {
+                  "id": "none",
+                  "label": "No new specs: the change does not alter behaviour",
+                  "style": "plain",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "full",
+                  "label": "Full: a new boundary, or a risk of concurrency, security or stored data",
+                  "style": "plain",
+                  "input": {
+                    "kind": "none"
+                  }
+                }
+              ],
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "key": "Shift+N",
+              "resolves_card": false
+            },
+            {
+              "id": "spec_edit:t-1@7~remove",
+              "label": "Take out of the plan",
+              "style": "destructive",
+              "role": "risk",
+              "description": "What you take out is not approved with the plan; a file the project already has stays as it is",
+              "presentation": "menu",
+              "options": [
+                {
+                  "id": "rmspec-afcb018f02d8",
+                  "label": "The spec “Partial refunds”",
+                  "style": "destructive",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "rmsc-2fa414cb7ac4",
+                  "label": "The scenario “Part of an order”",
+                  "style": "destructive",
+                  "input": {
+                    "kind": "none"
+                  }
+                }
+              ],
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "key": "x",
+              "resolves_card": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "documents",
+      "title": "Choose what to edit",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Spec",
+              "value": "Partial refunds",
+              "link": {
+                "kind": "view",
+                "key": "task_specs:t-1:spec:afcb018f02d8"
+              }
+            },
+            {
+              "label": "Scenario of “Partial refunds”",
+              "value": "Part of an order",
+              "link": {
+                "kind": "view",
+                "key": "task_specs:t-1:scenario:2fa414cb7ac4"
+              }
+            },
+            {
+              "label": "New",
+              "value": "A scenario of “Partial refunds”",
+              "link": {
+                "kind": "view",
+                "key": "task_specs:t-1:scenario:new-afcb018f02d8"
+              }
+            },
+            {
+              "label": "New",
+              "value": "A diagram of “Partial refunds”",
+              "link": {
+                "kind": "view",
+                "key": "task_specs:t-1:part:diagram:safcb018f02d8:new"
+              }
+            },
+            {
+              "label": "New",
+              "value": "A mockup of “Partial refunds”",
+              "link": {
+                "kind": "view",
+                "key": "task_specs:t-1:part:mockup:safcb018f02d8:new"
+              }
+            },
+            {
+              "label": "New",
+              "value": "A spec",
+              "link": {
+                "kind": "view",
+                "key": "task_specs:t-1:spec:new"
+              }
+            },
+            {
+              "label": "New",
+              "value": "A decision",
+              "link": {
+                "kind": "view",
+                "key": "task_specs:t-1:decision:new"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "specs",
+      "title": "Specs",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "spec_sheet",
+          "id": "spec:billing.partial",
+          "spec": "billing.partial",
+          "title": "Partial refunds",
+          "mark": {
+            "change": "new",
+            "label": "new"
+          },
+          "explanation": "Any amount up to what is left of the order comes back.",
+          "scenarios": [
+            {
+              "id": "billing.partial/part",
+              "title": "Part of an order",
+              "kind": "test",
+              "mark": {
+                "change": "new",
+                "label": "new"
+              },
+              "collapsed": false,
+              "lanes": [
+                {
+                  "kind": "given",
+                  "label": "Given",
+                  "steps": [
+                    {
+                      "text": "a paid order of 30 EUR"
+                    }
+                  ]
+                },
+                {
+                  "kind": "when",
+                  "label": "When",
+                  "steps": [
+                    {
+                      "text": "10 EUR are refunded"
+                    }
+                  ]
+                },
+                {
+                  "kind": "then",
+                  "label": "Then",
+                  "steps": [
+                    {
+                      "text": "the customer receives 10 EUR"
+                    }
+                  ]
+                }
+              ],
+              "anchor": {
+                "id": "scenario:billing.partial/part",
+                "quote": "billing.partial/part · Part of an order"
+              },
+              "edit": {
+                "kind": "view",
+                "key": "task_specs:t-1:scenario:2fa414cb7ac4"
+              },
+              "add": [
+                {
+                  "title": "Add a diagram",
+                  "link": {
+                    "kind": "view",
+                    "key": "task_specs:t-1:part:diagram:c2fa414cb7ac4:new"
+                  }
+                },
+                {
+                  "title": "Add a mockup",
+                  "link": {
+                    "kind": "view",
+                    "key": "task_specs:t-1:part:mockup:c2fa414cb7ac4:new"
+                  }
+                }
+              ]
+            }
+          ],
+          "anchor": {
+            "id": "spec:billing.partial",
+            "quote": "billing.partial · Partial refunds"
+          },
+          "edit": {
+            "kind": "view",
+            "key": "task_specs:t-1:spec:afcb018f02d8"
+          },
+          "add": [
+            {
+              "title": "Add a scenario",
+              "link": {
+                "kind": "view",
+                "key": "task_specs:t-1:scenario:new-afcb018f02d8"
+              }
+            },
+            {
+              "title": "Add a diagram",
+              "link": {
+                "kind": "view",
+                "key": "task_specs:t-1:part:diagram:safcb018f02d8:new"
+              }
+            },
+            {
+              "title": "Add a mockup",
+              "link": {
+                "kind": "view",
+                "key": "task_specs:t-1:part:mockup:safcb018f02d8:new"
+              }
+            }
+          ],
+          "actions": [
+            {
+              "id": "spec_edit:t-1@7~rmspec-afcb018f02d8",
+              "label": "Remove",
+              "style": "destructive",
+              "role": "risk",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "Remove this spec from the plan?",
+                "message": "It leaves the specs you approve with this plan. You can add it again while the plan waits.",
+                "button": "Remove"
+              },
+              "enabled": true,
+              "resolves_card": false
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
