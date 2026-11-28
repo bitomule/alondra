@@ -48,11 +48,12 @@ pub const SPECS_WITHOUT_STAGES: &str = "## Specs in this project
 
 This project keeps specs (its alondra.toml turns them on), and this task goes without stages: you plan, build and check it yourself. A spec, boundary or decision changes only with the user's approval: write the files, send them with propose_specs and present a plan through plan mode; approving the plan approves those exact files, and you go on in this same task. Without that approval a delivery that changes them is refused with specs_differ. Once specs are approved, validate your work against them yourself before delivering: commit, call ready_for_validation, run and judge what it lists and record each result with record_validation, commit only the ledger and deliver. A change the approved specs need goes through request_spec_change.";
 
-/// The first input of a task without stages, from its mission and the bytes of its project's
-/// alondra.toml: the mission alone, unless those settings turn specs on.
-pub fn unstaged_mission(mission: &str, settings: Option<&[u8]>) -> String {
+/// The input an agent of a task starts from, for a task that has no stages: its mission, and when
+/// it is the task's first agent in a project whose alondra.toml (`settings`, its bytes) turns
+/// specs on, how it changes and validates specs. A staged task's author is told otherwise.
+pub fn unstaged_mission(mission: &str, staged: bool, first_run: bool, settings: Option<&[u8]>) -> String {
     let specs = crate::specs::engine::read_settings(settings).is_ok_and(|settings| settings.specs.enabled);
-    if specs { format!("{mission}\n\n{SPECS_WITHOUT_STAGES}") } else { mission.to_owned() }
+    if specs && first_run && !staged { format!("{mission}\n\n{SPECS_WITHOUT_STAGES}") } else { mission.to_owned() }
 }
 
 /// Every agent tool whose use depends on the role of the execution that calls it.

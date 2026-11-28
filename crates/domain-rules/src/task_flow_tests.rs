@@ -100,12 +100,15 @@ fn runs(s: &DomainState) -> usize {
 // spec: task-flow.specs-without-stages/told-at-start
 #[test]
 fn the_agent_of_a_task_without_stages_in_a_project_with_specs_is_told_the_rule_when_it_starts() {
-    let input = unstaged_mission("Make full refunds pay 40 EUR", Some(SETTINGS.as_bytes()));
-    assert!(input.starts_with("Make full refunds pay 40 EUR"), "{input}");
+    let mission = "Make full refunds pay 40 EUR";
+    let input = unstaged_mission(mission, false, true, Some(SETTINGS.as_bytes()));
+    assert!(input.starts_with(mission), "{input}");
     let section = input.split_once("## Specs in this project").map(|(_, section)| section).expect("the section is in the first input");
     for tool in ["propose_specs", "ready_for_validation", "record_validation"] {
         assert!(section.contains(tool), "the section names {tool}: {section}");
     }
+    assert_eq!(unstaged_mission(mission, false, false, Some(SETTINGS.as_bytes())), mission, "only the first agent is told: a later one resumes its context");
+    assert_eq!(unstaged_mission(mission, true, true, Some(SETTINGS.as_bytes())), mission, "a task in stages is told as its author instead");
 }
 
 // spec: task-flow.specs-without-stages/nothing-added-without-specs
@@ -113,7 +116,7 @@ fn the_agent_of_a_task_without_stages_in_a_project_with_specs_is_told_the_rule_w
 fn a_project_without_specs_adds_nothing_to_the_mission() {
     let off = "format = 1\n\n[specs]\nenabled = false\n";
     for settings in [Some(off.as_bytes()), None] {
-        assert_eq!(unstaged_mission("Make full refunds pay 40 EUR", settings), "Make full refunds pay 40 EUR");
+        assert_eq!(unstaged_mission("Make full refunds pay 40 EUR", false, true, settings), "Make full refunds pay 40 EUR");
     }
 }
 
