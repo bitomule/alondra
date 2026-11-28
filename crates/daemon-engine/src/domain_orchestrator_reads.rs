@@ -134,6 +134,11 @@ fn author_name(i: &Interaction, state: &DomainState) -> String {
     }
 }
 
+/// What the card calls itself; only a card stored before cards had a title is named by its body.
+fn shown_title(i: &Interaction) -> String {
+    i.card.title.as_deref().map_or_else(|| body_title(&i.body), |title| title.to_owned())
+}
+
 /// A question or action request, open until answered or withdrawn.
 fn question(i: &Interaction, state: &DomainState) -> Option<Value> {
     let (options, answer, action) = match &i.payload {
@@ -142,7 +147,7 @@ fn question(i: &Interaction, state: &DomainState) -> Option<Value> {
         _ => return None,
     };
     let status = if i.withdrawn { "withdrawn" } else if answer.is_some() { "answered" } else { "open" };
-    Some(json!({"id": i.id, "title": body_title(&i.body), "detail": i.body, "blocking": i.blocking,
+    Some(json!({"id": i.id, "title": shown_title(i), "detail": i.body, "blocking": i.blocking,
         "options": options.iter().map(|o| json!({"label": o.label})).collect::<Vec<_>>(),
         "to_orchestrator": i.recipient == Recipient::Orchestrator, "action": action, "status": status,
         "answer": answer.as_ref().map(wire), "node_name": author_name(i, state), "session_id": author_session(i)}))
@@ -156,7 +161,7 @@ fn report(i: &Interaction, state: &DomainState) -> Option<Value> {
             (if *is_final { "final" } else { "partial" }, acceptance.is_some() || !feedback.is_empty()),
         _ => return None,
     };
-    Some(json!({"id": i.id, "title": body_title(&i.body), "kind": kind, "body": i.body, "read": read,
+    Some(json!({"id": i.id, "title": shown_title(i), "kind": kind, "body": i.body, "read": read,
         "node_name": author_name(i, state), "session_id": author_session(i)}))
 }
 
