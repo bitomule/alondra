@@ -40,6 +40,20 @@ rules_crate(
     deps = DOMAIN_RULES_DEPS,
 )
 
+# What the component task-flow owns here and its rules suite, for the test that validates the
+# repository's specs.
+filegroup(
+    name = "task_flow_files",
+    srcs = [
+        "src/rules/continuation_rules.rs",
+        "src/rules/spec_rules.rs",
+        "src/rules/validation_rules.rs",
+        "src/stage_rules.rs",
+        "src/task_flow_tests.rs",
+    ],
+    visibility = ["//:__pkg__"],
+)
+
 low_opt_rust_test(
     name = "domain_rules_test",
     timeout = "moderate",

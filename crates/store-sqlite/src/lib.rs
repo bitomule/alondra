@@ -83,7 +83,7 @@ const TASK_CREATIONS: &str = "CREATE TABLE IF NOT EXISTS task_creations(task_id 
 const REQUEST_FOLDS: &str = "CREATE TABLE IF NOT EXISTS request_folds(request_id TEXT PRIMARY KEY REFERENCES requests(id), task_id TEXT NOT NULL REFERENCES tasks(id));";
 /// The revision the orchestrator's current batch started from.
 const ORCHESTRATOR_BATCH: &str = "CREATE TABLE IF NOT EXISTS orchestrator_batch(singleton INTEGER PRIMARY KEY CHECK(singleton=1), base INTEGER NOT NULL CHECK(base>0));";
-const TASK_CONTINUATIONS: &str = "CREATE TABLE IF NOT EXISTS task_continuations(task_id TEXT PRIMARY KEY REFERENCES tasks(id), continues TEXT NOT NULL REFERENCES tasks(id));";
+pub(crate) const TASK_CONTINUATIONS: &str = "CREATE TABLE IF NOT EXISTS task_continuations(task_id TEXT PRIMARY KEY REFERENCES tasks(id), continues TEXT NOT NULL REFERENCES tasks(id));";
 const TASK_PROJECTS: &str = "CREATE TABLE IF NOT EXISTS task_projects(task_id TEXT PRIMARY KEY REFERENCES tasks(id), project TEXT NOT NULL CHECK(length(trim(project))>0));";
 const MODEL_METRICS: &str = include_str!("model_metrics.sql");
 /// How many turn ends in a row Alondra held back for a Task, since its node last delivered or

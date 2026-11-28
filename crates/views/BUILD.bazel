@@ -161,4 +161,11 @@ filegroup(
     visibility = ["//crates/alondra:__pkg__", "//crates/cli-report:__pkg__", "//crates/views:__pkg__"],
 )
 
+# The views suite of the component task-flow, for the test that validates the repository's specs.
+filegroup(
+    name = "task_flow_files",
+    srcs = ["src/task_flow_tests.rs"],
+    visibility = ["//:__pkg__"],
+)
+
 repo_tree()

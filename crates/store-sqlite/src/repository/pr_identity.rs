@@ -63,6 +63,7 @@ pub(crate) fn upgrade(tx: &rusqlite::Transaction<'_>) -> Result<()> {
         tx.execute_batch(&format!("INSERT INTO pull_requests({shared}) SELECT {shared} FROM pull_requests_copy; DROP TABLE pull_requests_copy;"))?;
     }
     tx.execute_batch(ALIASES)?;
+    tx.execute_batch(crate::TASK_CONTINUATIONS)?;
     for (name, definition) in INDEXES {
         crate::refresh_schema_object(tx, "index", name, definition)?;
     }
