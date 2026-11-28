@@ -15,7 +15,7 @@
               "kind": "state",
               "label": "State",
               "tone": "neutral",
-              "value": "Waiting · 1st of 1 · Disk · 16.5 GB free of 17.0 GB needed · reserved by “Write the release notes” 3.0 GB, “Add the changelog” 3.0 GB and “Translate the guide” 3.0 GB"
+              "value": "Waiting · 1st of 1 · Disk · 19.5 GB free of 21.0 GB needed · reserved by “Write the release notes” 4.0 GB, “Add the changelog” 4.0 GB and “Translate the guide” 4.0 GB"
             },
             {
               "kind": "request",
@@ -357,8 +357,8 @@
         "id": "disk",
         "label": "Disk",
         "level": "hot",
-        "text": "16 GB free",
-        "value": 0.9849933374207468
+        "text": "20 GB free",
+        "value": 0.982264853315428
       }
     ],
     "orchestrator": {

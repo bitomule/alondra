@@ -22,14 +22,15 @@ do = "task"
 id = "t4"
 title = "Cancel the stale task"
 
-# The disk has 16.5 GB usable and the builds measured took 3 GB on average: three nodes at work
-# and a fourth starting need 3 GB each on top of the 5 GB line, 17 GB.
+# The disk has 19.5 GB usable and the builds measured took 4 GB on average: three nodes at work
+# and a fourth coming back need 4 GB each on top of the 5 GB line, 21 GB. Once one of the three is
+# cancelled, the fourth needs 17 GB, which fits with the margin the disk needs once it was short.
 [[step]]
 do = "disk"
-usable = 16.5
-free = 16.5
+usable = 19.5
+free = 19.5
 project = "app"
-peaks = [1.0, 2.0, 6.0]
+peaks = [2.0, 5.0, 5.0]
 
 [[step]]
 do = "node"
@@ -102,7 +103,7 @@ screens = ["tasks", "task:t4"]
 [[step.expect]]
 check = "view_shows"
 screen = "task:t4"
-text = "Disk · 16.5 GB free of 17.0 GB needed · reserved by “Write the release notes” 3.0 GB, “Add the changelog” 3.0 GB and “Translate the guide” 3.0 GB"
+text = "Disk · 19.5 GB free of 21.0 GB needed · reserved by “Write the release notes” 4.0 GB, “Add the changelog” 4.0 GB and “Translate the guide” 4.0 GB"
 
 [[step]]
 do = "orchestrator_cancel"

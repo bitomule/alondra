@@ -381,8 +381,8 @@
         "id": "disk",
         "label": "Disco",
         "level": "hot",
-        "text": "16 GB libres",
-        "value": 0.9849933374207468
+        "text": "20 GB libres",
+        "value": 0.982264853315428
       }
     ],
     "orchestrator": {
