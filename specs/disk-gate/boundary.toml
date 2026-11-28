@@ -1,0 +1,19 @@
+id = "disk-gate"
+owns = [
+  "crates/engine-admission/src/disk_peaks.rs",
+  "crates/engine-admission/src/machine_watch.rs",
+  "crates/engine-admission/src/admission.rs",
+]
+depends_on = []
+
+[[suite]]
+id = "admission"
+run = ["bazelisk", "test", "//crates/engine-admission:engine_admission_test"]
+tests = ["crates/engine-admission/src/disk_gate_tests.rs"]
+timeout_minutes = 60
+
+[[suite]]
+id = "views"
+run = ["bazelisk", "test", "//crates/views:views_test"]
+tests = ["crates/views/src/disk_gate_tests.rs"]
+timeout_minutes = 60
