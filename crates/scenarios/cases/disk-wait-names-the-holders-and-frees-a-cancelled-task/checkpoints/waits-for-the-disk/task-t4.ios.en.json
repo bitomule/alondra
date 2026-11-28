@@ -1,0 +1,382 @@
+{
+  "client": "ios",
+  "cursor": "<cursor>",
+  "data_epoch": "<data_epoch>",
+  "key": "task:t4",
+  "protocol": 1,
+  "sections": [
+    {
+      "collapsed": false,
+      "id": "header",
+      "items": [
+        {
+          "items": [
+            {
+              "kind": "state",
+              "label": "State",
+              "tone": "neutral",
+              "value": "Waiting · 1st of 1 · Disk · 16.5 GB free of 17.0 GB needed · reserved by “Write the release notes” 3.0 GB, “Add the changelog” 3.0 GB and “Translate the guide” 3.0 GB"
+            },
+            {
+              "kind": "request",
+              "label": "Request",
+              "value": "Write the release notes"
+            }
+          ],
+          "type": "facts"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "id": "readings",
+      "items": [
+        {
+          "items": [
+            {
+              "label": "Last turn",
+              "tone": "warning",
+              "value": "Interrupted"
+            }
+          ],
+          "type": "facts"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "id": "elapsed",
+      "items": [
+        {
+          "badges": [
+            {
+              "elapsed": {
+                "since": "2026-11-15T09:00:30.000+00:00"
+              },
+              "text": "since 09:00",
+              "tone": "neutral"
+            }
+          ],
+          "depth": 0,
+          "icon": "history",
+          "id": "elapsed",
+          "struck": false,
+          "title": "Running for",
+          "type": "row"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "id": "since",
+      "items": [
+        {
+          "depth": 0,
+          "icon": "history",
+          "id": "since",
+          "struck": false,
+          "title": "Since",
+          "trailing": {
+            "at": "2026-11-15T09:00:30.000+00:00",
+            "format": "relative",
+            "kind": "time"
+          },
+          "type": "row"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "id": "last_message",
+      "items": [
+        {
+          "commentable": false,
+          "text": "Working on it",
+          "truncated": false,
+          "type": "markdown"
+        },
+        {
+          "depth": 0,
+          "icon": "history",
+          "id": "last_message_time",
+          "struck": false,
+          "title": "Last message",
+          "trailing": {
+            "at": "2026-11-15T09:01:00.000+00:00",
+            "format": "relative",
+            "kind": "time"
+          },
+          "type": "row"
+        }
+      ],
+      "title": "What it said last"
+    },
+    {
+      "collapsed": true,
+      "id": "request",
+      "items": [
+        {
+          "commentable": false,
+          "text": "Write the release notes",
+          "truncated": false,
+          "type": "markdown"
+        }
+      ],
+      "title": "Request"
+    },
+    {
+      "collapsed": false,
+      "id": "options",
+      "items": [
+        {
+          "items": [
+            {
+              "kind": "priority",
+              "label": "Priority",
+              "value": "Normal"
+            },
+            {
+              "label": "PR handling",
+              "value": "You review it; accepting it merges it"
+            },
+            {
+              "label": "Effort",
+              "value": "Auto"
+            }
+          ],
+          "type": "facts"
+        }
+      ],
+      "title": "Options"
+    },
+    {
+      "collapsed": false,
+      "id": "actions",
+      "items": [
+        {
+          "actions": [
+            {
+              "attachments": true,
+              "enabled": true,
+              "id": "msg:<node>@<revision>~t4",
+              "input": {
+                "kind": "text",
+                "multiline": true,
+                "placeholder": "Write to this task's node…",
+                "required": true
+              },
+              "label": "Message",
+              "presentation": "button",
+              "resolves_card": false,
+              "role": "neutral",
+              "style": "secondary"
+            },
+            {
+              "attachments": false,
+              "enabled": true,
+              "id": "pause:<node>@<revision>",
+              "input": {
+                "kind": "none"
+              },
+              "label": "Pause",
+              "presentation": "button",
+              "resolves_card": false,
+              "role": "neutral",
+              "stamp": "Paused",
+              "style": "secondary"
+            },
+            {
+              "attachments": false,
+              "enabled": true,
+              "id": "set_priority:t4@<revision>",
+              "input": {
+                "kind": "none"
+              },
+              "label": "Priority",
+              "options": [
+                {
+                  "description": "Starts before Normal and Low",
+                  "id": "high",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "label": "High",
+                  "style": "secondary"
+                },
+                {
+                  "description": "The default",
+                  "id": "normal",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "label": "Normal · now",
+                  "style": "secondary"
+                },
+                {
+                  "description": "Starts when nothing else waits",
+                  "id": "low",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "label": "Low",
+                  "style": "secondary"
+                }
+              ],
+              "presentation": "menu",
+              "resolves_card": false,
+              "role": "neutral",
+              "style": "secondary"
+            },
+            {
+              "attachments": false,
+              "confirm": {
+                "button": "Cancel Task",
+                "message": "Cancel this task?",
+                "title": "Cancel Task"
+              },
+              "enabled": true,
+              "id": "cancel:t4@<revision>",
+              "input": {
+                "kind": "none"
+              },
+              "label": "Cancel Task",
+              "presentation": "button",
+              "resolves_card": false,
+              "role": "risk",
+              "style": "destructive"
+            },
+            {
+              "attachments": false,
+              "disabled_reason": "Update Alondra to use this feature",
+              "enabled": false,
+              "id": "",
+              "input": {
+                "kind": "none"
+              },
+              "label": "Change model",
+              "presentation": "button",
+              "resolves_card": false,
+              "role": "neutral",
+              "style": "plain"
+            }
+          ],
+          "type": "actions"
+        }
+      ]
+    }
+  ],
+  "service": {
+    "capabilities": [
+      "account_presentation",
+      "model_selection",
+      "provider_accounts",
+      "spec_fields"
+    ],
+    "version": "<version>",
+    "views_protocol": {
+      "max": 1,
+      "min": 1
+    }
+  },
+  "status": {
+    "badge": 0,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Inbox",
+        "value": 0
+      },
+      {
+        "id": "tasks",
+        "label": "Tasks",
+        "value": 4
+      },
+      {
+        "id": "working",
+        "label": "working",
+        "value": 3
+      },
+      {
+        "id": "needs_you",
+        "label": "waiting for you",
+        "value": 0
+      },
+      {
+        "id": "queued",
+        "label": "queued",
+        "value": 1
+      },
+      {
+        "id": "paused",
+        "label": "paused",
+        "value": 0
+      },
+      {
+        "id": "other_waiting",
+        "label": "waiting",
+        "value": 0
+      }
+    ],
+    "gauges": [
+      {
+        "detail": "You can go on: Claude has room",
+        "id": "usage",
+        "label": "Claude",
+        "level": "calm",
+        "parts": [
+          {
+            "detail": "90% of the week left",
+            "group": "Claude",
+            "label": "Default",
+            "level": "calm",
+            "lines": [
+              "90% of the week left"
+            ],
+            "text": "with room",
+            "value": 0.9
+          }
+        ],
+        "text": "with room",
+        "value": 0.8
+      },
+      {
+        "id": "memory",
+        "label": "RAM",
+        "level": "calm",
+        "text": "25%",
+        "value": 0.25
+      },
+      {
+        "id": "cpu",
+        "label": "CPU",
+        "level": "calm",
+        "text": "5%",
+        "value": 0.05
+      },
+      {
+        "id": "disk",
+        "label": "Disk",
+        "level": "hot",
+        "text": "16 GB free",
+        "value": 0.9849933374207468
+      }
+    ],
+    "orchestrator": {
+      "text": "idle",
+      "tone": "neutral"
+    },
+    "summary": "3 tasks working",
+    "summary_parts": [
+      {
+        "count": 3,
+        "id": "working",
+        "one": "{count} task working",
+        "other": "{count} tasks working"
+      }
+    ],
+    "version": "<version>"
+  },
+  "title": "Cancel the stale task",
+  "version": "<version>",
+  "view": "task"
+}

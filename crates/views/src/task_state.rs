@@ -269,7 +269,7 @@ fn waiting(task: &Task, waits: WaitsFor, context: &RenderContext<'_>) -> Present
                     queue = Some(queued.position);
                     queue_fact(task, queued, lang)
                 }
-                (_, Some((free, needed))) => common::disk_room_fact(free, needed, lang),
+                (_, Some((free, needed, holders))) => common::disk_room_fact(free, needed, holders, lang),
                 _ => disk(),
             }
         }
@@ -391,8 +391,8 @@ fn queue_fact(task: &Task, queued: &super::LiveQueued, lang: super::Lang) -> Str
     match &queued.hold {
         LiveHold::Next if queued.position == 1 => t!(lang, "Starts within a minute", "Arranca en menos de un minuto").into(),
         LiveHold::Slots { working, limit } => tf!(lang, "{place} of {of} · {working} of {limit} slots taken", "{place} de {of} · {working} de {limit} huecos ocupados"),
-        LiveHold::Disk { free, needed } => {
-            let room = common::disk_room_fact(*free, *needed, lang);
+        LiveHold::Disk { free, needed, holders } => {
+            let room = common::disk_room_fact(*free, *needed, holders, lang);
             tf!(lang, "{place} of {of} · {room}", "{place} de {of} · {room}")
         }
         LiveHold::Memory { .. } => with_priority(task, tf!(lang, "{place} of {of} · the Mac is short of memory", "{place} de {of} · el Mac va justo de memoria"), lang),

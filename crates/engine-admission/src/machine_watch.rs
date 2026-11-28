@@ -21,6 +21,7 @@ const MACHINE_CAUSE: &str = "machine";
 use std::sync::{Arc, Mutex};
 
 use alondra_engine_ports::disk::Disk;
+use alondra_engine_ports::admission::DiskHolder;
 use std::time::Duration;
 
 use alondra_engine_ports::Runtime;
@@ -94,23 +95,53 @@ struct Record {
 
 impl Record {
     /// What the `working` tasks, the work seen since the last reading and the admissions granted
-    /// since then may still take from the disk, leaving out the gate's `head`.
-    fn reserved(&mut self, working: &BTreeMap<TaskId, Option<String>>, head: Option<&crate::admission::Key>) -> u64 {
+    /// since then may still take from the disk, leaving out the gate's `head`: the total and each
+    /// reservation, most first.
+    fn reserved(&mut self, working: &BTreeMap<TaskId, Option<String>>, head: Option<&crate::admission::Key>) -> (u64, Vec<DiskHolder>) {
         if self.peaks_ignored {
-            return 0;
+            return (0, vec![]);
         }
         for (task, project) in working {
             self.disk_working.entry(crate::admission::Key::Task(task.clone())).or_insert_with(|| project.clone());
         }
-        let granted = self.disk_grants.values().copied().fold(0u64, u64::saturating_add);
-        self.disk_working.iter().filter(|(key, _)| Some(*key) != head && !self.disk_grants.contains_key(*key)).map(|(key, project)| {
+        let mut holders: Vec<DiskHolder> = self.disk_grants.iter().map(|(key, bytes)| DiskHolder { key: key.clone(), bytes: *bytes }).collect();
+        holders.extend(self.disk_working.iter().filter(|(key, _)| Some(*key) != head && !self.disk_grants.contains_key(*key)).map(|(key, project)| {
             let estimate = self.peaks.estimate(project.as_deref());
-            match key {
+            let bytes = match key {
                 crate::admission::Key::Task(task) => self.stretches.reserved(task, estimate),
                 _ => estimate,
-            }
-        }).fold(granted, u64::saturating_add)
+            };
+            DiskHolder { key: key.clone(), bytes }
+        }));
+        let total = holders.iter().map(|holder| holder.bytes).fold(0u64, u64::saturating_add);
+        holders.retain(|holder| holder.bytes > 0);
+        holders.sort_by(|a, b| b.bytes.cmp(&a.bytes).then_with(|| a.key.cmp(&b.key)));
+        (total, holders)
     }
+
+    /// Forgets the admission, the work seen and the stretch of every task that is `over`, without
+    /// waiting for the next reading of the disk; a stretch ended keeps its peak. Returns whether a
+    /// stretch ended, so the peaks are saved.
+    fn release(&mut self, over: &dyn Fn(&TaskId) -> bool, now: Millis) -> bool {
+        let ended = |key: &crate::admission::Key| matches!(key, crate::admission::Key::Task(task) if over(task));
+        self.disk_grants.retain(|key, _| !ended(key));
+        self.disk_working.retain(|key, _| !ended(key));
+        let Record { stretches, peaks, .. } = self;
+        stretches.end(peaks, over, now)
+    }
+}
+
+/// What the gate decided about the disk for the head of its queue, read under one lock.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct DiskDecision {
+    /// Short of room: what is free and what is needed.
+    pub room: Option<alondra_engine_ports::disk::Room>,
+    /// What the head needs: what the others reserve, its own estimate and the disk's line.
+    pub needed: u64,
+    /// What each other reservation holds, most first.
+    pub holders: Vec<DiskHolder>,
+    /// Swap and disk budget, for the log.
+    pub detail: Option<String>,
 }
 
 /// A node stopped for the machine, as the card names it.
@@ -385,6 +416,11 @@ impl MachineWatch {
         self.record().peaks_ignored = true;
     }
 
+    /// Measures the nodes' peaks again and reserves the disk for them, after `ignore_peaks`.
+    pub fn measure_peaks_again(&self) {
+        self.record().peaks_ignored = false;
+    }
+
     /// Takes a sample of the usable space of the Mac's own disk with the tasks at work, by
     /// project; returns whether one stopped working or one whose start went unseen began, which
     /// frees what they reserved.
@@ -412,18 +448,31 @@ impl MachineWatch {
         self.record().stretches.used(task)
     }
 
-    /// Writes not covered by a newer byte budget stay reserved even after their tasks end.
+    /// Reserves one estimate for `key` until the next reading of the disk or until its task ends: a
+    /// new admission of the same task, its start, a resume or a handover, replaces the one before.
     pub(crate) fn reserve_admission(&self, key: crate::admission::Key, project: Option<String>) {
         let mut record = self.record();
         if record.peaks_ignored { return; }
         let cost = record.peaks.estimate(project.as_deref());
-        let grant = record.disk_grants.entry(key.clone()).or_default();
-        *grant = grant.saturating_add(cost);
+        record.disk_grants.insert(key.clone(), cost);
         record.disk_working.entry(key).or_insert(project);
     }
 
     pub fn disk_reserved(&self, working: &BTreeMap<TaskId, Option<String>>) -> u64 {
-        self.record().reserved(working, None)
+        self.record().reserved(working, None).0
+    }
+
+    /// What each reservation holds of the disk, most first, once the tasks `over` released theirs.
+    pub fn disk_holders(&self, working: &BTreeMap<TaskId, Option<String>>, over: &dyn Fn(&TaskId) -> bool, now: Millis) -> Vec<DiskHolder> {
+        let mut record = self.record();
+        self.release(&mut record, over, now);
+        record.reserved(working, None).1
+    }
+
+    fn release(&self, record: &mut Record, over: &dyn Fn(&TaskId) -> bool, now: Millis) {
+        if record.release(over, now) {
+            self.save(record);
+        }
     }
 
     /// The Mac's disk short of room for the next node, of `project`, on top of what the `working`
@@ -433,17 +482,30 @@ impl MachineWatch {
         self.disk_room_for(working, project, None, now)
     }
 
+    pub(crate) fn disk_room_for(&self, working: &BTreeMap<TaskId, Option<String>>, project: Option<&str>, head: Option<&crate::admission::Key>, now: Millis) -> Option<alondra_engine_ports::disk::Room> {
+        self.disk_decision(working, project, head, &|_| false, now).room
+    }
+
     /// The gate's `head` needs only the disk's line when nothing else reserves the disk, no other
     /// node at work nor an admission since its last reading, so one node can always work over the
-    /// line. Read and decided under one lock, so a sample cannot clear the work it counts midway.
-    pub(crate) fn disk_room_for(&self, working: &BTreeMap<TaskId, Option<String>>, project: Option<&str>, head: Option<&crate::admission::Key>, now: Millis) -> Option<alondra_engine_ports::disk::Room> {
+    /// line. A task `over` reserves nothing. Read and decided under one lock, so a sample cannot
+    /// clear the work it counts midway.
+    pub(crate) fn disk_decision(&self, working: &BTreeMap<TaskId, Option<String>>, project: Option<&str>, head: Option<&crate::admission::Key>, over: &dyn Fn(&TaskId) -> bool, now: Millis) -> DiskDecision {
         let mut record = self.record();
-        let reserved = record.reserved(working, head);
+        self.release(&mut record, over, now);
+        let (reserved, holders) = record.reserved(working, head);
         let alone = head.is_some() && record.disk_grants.is_empty() && record.disk_working.keys().all(|key| Some(key) == head);
         let estimate = if record.peaks_ignored || alone { 0 } else { record.peaks.estimate(project) };
         let needed = reserved.saturating_add(estimate).saturating_add(alondra_engine_ports::disk::low_lines().usable);
+        let detail = record.disk.map(|space| {
+            let swap = record.swap.line(now).unwrap_or_else(|| "swap unavailable".into());
+            let builds = reserved.saturating_add(if record.peaks_ignored { 0 } else { record.peaks.estimate(project) });
+            let remaining = i128::from(space.free) - i128::from(builds);
+            format!("{swap}; container free {:.2} GB, builds reserved {:.2} GB, free less builds {:.2} GB",
+                space.free as f64 / 1_000_000_000.0, builds as f64 / 1_000_000_000.0, remaining as f64 / 1_000_000_000.0)
+        });
         let Some(disk) = record.disk else {
-            return Some(alondra_engine_ports::disk::Room { free: 0, needed });
+            return DiskDecision { room: Some(alondra_engine_ports::disk::Room { free: 0, needed }), needed, holders, detail };
         };
         let short = disk.room_for(needed, record.short).err();
         record.short = short.is_some();
@@ -457,23 +519,13 @@ impl MachineWatch {
         };
         record.swap_short = swap_short.is_some();
         let carded = record.incident.as_ref().is_some_and(|incident| incident.cause == MachineCause::Disk);
-        swap_short.or(short).or_else(|| carded.then(|| alondra_engine_ports::disk::Room { free: disk.shown_free(), needed }))
+        let room = swap_short.or(short).or_else(|| carded.then(|| alondra_engine_ports::disk::Room { free: disk.shown_free(), needed }));
+        DiskDecision { room, needed, holders, detail }
     }
 
     /// Swap and disk budget beside the queue hold, for the throttled log.
     pub(crate) fn disk_detail(&self, working: &BTreeMap<TaskId, Option<String>>, project: Option<&str>, now: Millis) -> Option<String> {
-        self.disk_detail_for(working, project, None, now)
-    }
-
-    pub(crate) fn disk_detail_for(&self, working: &BTreeMap<TaskId, Option<String>>, project: Option<&str>, head: Option<&crate::admission::Key>, now: Millis) -> Option<String> {
-        let mut record = self.record();
-        let reserved = record.reserved(working, head);
-        let space = record.disk?;
-        let swap = record.swap.line(now).unwrap_or_else(|| "swap unavailable".into());
-        let builds = reserved.saturating_add(if record.peaks_ignored { 0 } else { record.peaks.estimate(project) });
-        let remaining = i128::from(space.free) - i128::from(builds);
-        Some(format!("{swap}; container free {:.2} GB, builds reserved {:.2} GB, free less builds {:.2} GB",
-            space.free as f64 / 1_000_000_000.0, builds as f64 / 1_000_000_000.0, remaining as f64 / 1_000_000_000.0))
+        self.disk_decision(working, project, None, &|_| false, now).detail
     }
 
     /// Whether the disk fell under its floor.
@@ -835,7 +887,7 @@ mod tests {
         assert_eq!(reopened.disk_room(&working(&[("t4", "app")]), Some("app"), 100),
             Some(alondra_engine_ports::disk::Room { free: 15 * GB, needed: GB + 12 * GB + 5 * GB }), "t4's last GB and the next one's 12 on top of the 5 GB line");
         reopened.measure_peaks(89 * GB, &BTreeMap::new(), 102);
-        assert_eq!(reopened.record().peaks.estimate(Some("app")), 12 * GB);
+        assert_eq!(reopened.record().peaks.estimate(Some("app")), 11_750_000_000, "the average of the three 12 GB and t4's 11");
         assert_eq!(reopened.record().peaks.most(), 12 * GB, "t4's 11 GB is kept beside the three 12 GB");
         let earlier: Record = serde_json::from_str(r#"{"incident": null, "declared": {}, "builds": [5000000000]}"#).unwrap();
         assert_eq!(earlier.peaks, crate::disk_peaks::Estimates::default(), "a file of an earlier daemon still reads");

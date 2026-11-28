@@ -41,12 +41,23 @@ pub struct Outcome {
     pub timings: Timings,
 }
 
-/// The Mac of a scenario: always rested, with room for everything. It counts the samples the
-/// daemon takes of it.
+/// The Mac of a scenario: always rested, with room for everything unless a `disk` step sets its
+/// disk. It counts the samples the daemon takes of it.
 #[derive(Clone, Default)]
-pub struct CalmMac(Arc<std::sync::atomic::AtomicU64>, pub Arc<Publication>);
+pub struct CalmMac(Arc<std::sync::atomic::AtomicU64>, pub Arc<Publication>, Arc<Mutex<Option<MeasuredDisk>>>);
+
+/// The disk a `disk` step set, in bytes.
+#[derive(Clone, Copy)]
+struct MeasuredDisk {
+    usable: u64,
+    free: u64,
+}
 
 impl CalmMac {
+    fn set_disk(&self, usable: u64, free: u64) {
+        *self.2.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(MeasuredDisk { usable, free });
+    }
+
     pub async fn wait_for_second_publication(&self) {
         self.1.wait_for(2).await;
     }
@@ -91,6 +102,8 @@ impl Publication {
 impl MachineProbe for CalmMac {
     fn sample(&self) -> alondra_core::Machine {
         self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let disk = *self.2.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (disk_available, disk_purgeable) = disk.map_or((1 << 39, 0), |disk| (disk.free, disk.usable.saturating_sub(disk.free)));
         alondra_core::Machine {
             at: alondra_core::now_millis(),
             memory_total: 16 << 30,
@@ -102,8 +115,8 @@ impl MachineProbe for CalmMac {
             cpus: 8,
             cpu_usage: 5.0,
             disk_total: 1 << 40,
-            disk_available: 1 << 39,
-            disk_purgeable: 0,
+            disk_available,
+            disk_purgeable,
             unreliable: false,
         }
     }
@@ -852,6 +865,12 @@ impl Context<'_> {
             Step::NodeLimit { count } => {
                 self.daemon().limit_nodes(*count);
                 self.settle().await?;
+            }
+            Step::Disk { usable, free, project, peaks } => {
+                let bytes = |gb: f64| (gb * 1e9).round() as u64;
+                self.mac.set_disk(bytes(*usable), bytes(*free));
+                self.daemon().measure_disk_peaks(project, &peaks.iter().map(|peak| bytes(*peak)).collect::<Vec<_>>());
+                self.pass(Duration::from_secs(20), index).await?;
             }
             Step::Tell { task, text } => self.tell(index, task, text).await?,
             Step::ReadMessage { task } => {

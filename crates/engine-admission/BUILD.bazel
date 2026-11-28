@@ -42,6 +42,7 @@ low_opt_rust_test(
     # Bazel test-setup resolves a relative HOME to this test's TEST_TMPDIR.
     env = {"HOME": "."},
     version = VERSION,
+    compile_data = ["//:specs/disk-gate/boundary.toml"],
     deps = ["//crates/domain-rules:domain_rules"] + all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
         "//crates/engine-doubles:engine_doubles",
         "//crates/daemon-engine-machine:daemon_engine_machine",
@@ -63,6 +64,19 @@ rust_inputs_test(
 )
 
 exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
+
+# What the component disk-gate owns here and its admission suite, for the test that validates the
+# repository's specs.
+filegroup(
+    name = "disk_gate_files",
+    srcs = [
+        "src/admission.rs",
+        "src/disk_gate_tests.rs",
+        "src/disk_peaks.rs",
+        "src/machine_watch.rs",
+    ],
+    visibility = ["//:__pkg__"],
+)
 
 # The crate's production sources: the crash report's log catalog reads them, and fails on a test
 # file among them; alondrad's lock policy test reads them too.

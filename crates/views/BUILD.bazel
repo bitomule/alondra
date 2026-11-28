@@ -168,4 +168,11 @@ filegroup(
     visibility = ["//:__pkg__"],
 )
 
+# The views suite of the component disk-gate, for the test that validates the repository's specs.
+filegroup(
+    name = "disk_gate_files",
+    srcs = ["src/disk_gate_tests.rs"],
+    visibility = ["//:__pkg__"],
+)
+
 repo_tree()

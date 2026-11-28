@@ -8,7 +8,8 @@
 //! together is never more than the disk lost, so what they reserve covers what they may still
 //! take. A stretch's peak is the most it took. A stretch that ends keeps its peak, cut at
 //! `PEAK_CEILING_BYTES`, as one of its project's latest `STRETCHES_KEPT`; a project is estimated at
-//! the second highest of them, so one stray reading does not decide it. The stretches running and the
+//! their average, never under `MEASURED_PEAK_FLOOR_BYTES`: a minimum, not the worst case, since most
+//! nodes read, write and run commands without building. The stretches running and the
 //! latest reading are kept across a restart, so a node at work goes on from what it took. A stretch
 //! whose start went unseen (no reading kept) never knew what it used before: its build most likely
 //! already took its space, which the free space shows, so it reserves `UNSEEN_START_BYTES` and keeps
@@ -48,17 +49,19 @@ pub struct Measured {
 pub struct Estimates(BTreeMap<String, Measured>);
 
 impl Estimates {
-    /// The space a node of `project` takes at its peak on the Mac's own disk: one not measured
-    /// enough reserves what the heaviest measured enough takes.
+    /// The space a node of `project` takes at its peak on the Mac's own disk, on average. One
+    /// measured fewer than `TRUSTED_STRETCHES` times reserves the average of every peak kept by the
+    /// projects measured enough, or its own if larger; `UNMEASURED_PEAK_BYTES` while none is.
     pub fn estimate(&self, project: Option<&str>) -> u64 {
-        let heaviest = self.0.values().filter(|measured| measured.peaks.len() >= TRUSTED_STRETCHES).map(second_highest).max();
-        self.estimate_or(project, heaviest.map_or(UNMEASURED_PEAK_BYTES, |peak| peak.max(MEASURED_PEAK_FLOOR_BYTES)))
-    }
-
-    fn estimate_or(&self, project: Option<&str>, unmeasured: u64) -> u64 {
-        let Some(measured) = project.and_then(|project| self.0.get(project)) else { return unmeasured };
-        let least = if measured.peaks.len() < TRUSTED_STRETCHES { unmeasured } else { MEASURED_PEAK_FLOOR_BYTES };
-        second_highest(measured).max(least)
+        let measured = project.and_then(|project| self.0.get(project));
+        let own = measured.map_or(0, |measured| average(&measured.peaks));
+        if measured.is_some_and(|measured| measured.peaks.len() >= TRUSTED_STRETCHES) {
+            return own.max(MEASURED_PEAK_FLOOR_BYTES);
+        }
+        let trusted: Vec<u64> = self.0.values().filter(|measured| measured.peaks.len() >= TRUSTED_STRETCHES)
+            .flat_map(|measured| measured.peaks.iter().copied()).collect();
+        let unmeasured = if trusted.is_empty() { UNMEASURED_PEAK_BYTES } else { average(&trusted) };
+        own.max(unmeasured).max(MEASURED_PEAK_FLOOR_BYTES)
     }
 
     /// The most any stretch kept took.
@@ -89,11 +92,12 @@ impl Estimates {
     }
 }
 
-/// The second highest peak kept, the highest while only one is.
-fn second_highest(measured: &Measured) -> u64 {
-    let mut peaks = measured.peaks.clone();
-    peaks.sort_unstable_by(|a, b| b.cmp(a));
-    peaks.get(1).or(peaks.first()).copied().unwrap_or(0)
+/// The average of `peaks`, none when there are none.
+fn average(peaks: &[u64]) -> u64 {
+    if peaks.is_empty() {
+        return 0;
+    }
+    (peaks.iter().map(|peak| u128::from(*peak)).sum::<u128>() / peaks.len() as u128) as u64
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -123,12 +127,7 @@ impl Ledger {
     /// Swap already took space from the boot container, but is not part of a build's peak.
     pub fn sample_excluding(&mut self, estimates: &mut Estimates, usable: u64, working: &BTreeMap<TaskId, Option<String>>, now: Millis, swap_change: i128) -> bool {
         let ended: Vec<TaskId> = self.stretches.keys().filter(|task| !working.contains_key(*task)).cloned().collect();
-        for task in &ended {
-            let Some(stretch) = self.stretches.remove(task) else { continue };
-            if let (true, Some(project)) = (stretch.whole, stretch.project.as_deref()) {
-                estimates.keep(project, stretch.peak, now);
-            }
-        }
+        self.end(estimates, &|task| !working.contains_key(task), now);
         if let Some(before) = self.usable {
             self.share(before as i128 - usable as i128 - swap_change);
         }
@@ -142,6 +141,18 @@ impl Ledger {
         }
         self.usable = Some(usable);
         !ended.is_empty() || unseen
+    }
+
+    /// Ends the stretches of the tasks that are `over` before the next reading, each keeping its peak.
+    pub fn end(&mut self, estimates: &mut Estimates, over: &dyn Fn(&TaskId) -> bool, now: Millis) -> bool {
+        let ended: Vec<TaskId> = self.stretches.keys().filter(|task| over(task)).cloned().collect();
+        for task in &ended {
+            let Some(stretch) = self.stretches.remove(task) else { continue };
+            if let (true, Some(project)) = (stretch.whole, stretch.project.as_deref()) {
+                estimates.keep(project, stretch.peak, now);
+            }
+        }
+        !ended.is_empty()
     }
 
     /// Splits what the disk lost evenly among the stretches running, or takes what it gained off
@@ -332,36 +343,19 @@ mod tests {
     }
 
     #[test]
-    fn a_new_project_reserves_the_prudent_default_until_it_is_measured_three_times() {
-        assert_eq!(Estimates::default().estimate(Some("new")), UNMEASURED_PEAK_BYTES);
-        assert_eq!(Estimates::default().estimate(None), UNMEASURED_PEAK_BYTES, "a task without a project");
-        assert_eq!(measured(&[2 * GB, 3 * GB]).estimate(Some("app")), UNMEASURED_PEAK_BYTES);
-        let mut heaviest = measured(&[GB, 4 * GB, 4 * GB]);
-        heaviest.keep("web", 2 * GB, 3);
-        assert_eq!(heaviest.estimate(Some("new")), 4 * GB, "a project never seen reserves what the heaviest measured enough takes");
-        assert_eq!(heaviest.estimate(Some("web")), 4 * GB, "and so does one seen too few times");
-        heaviest.keep("web", 6 * GB, 4);
-        assert_eq!(heaviest.estimate(Some("web")), 4 * GB, "two stretches are still too few, whatever the highest");
-        assert_eq!(measured(&[0, 0, 0]).estimate(Some("new")), MEASURED_PEAK_FLOOR_BYTES, "never under the floor of a project measured enough");
-        assert_eq!(measured(&[12 * GB]).estimate(Some("app")), 12 * GB, "measured over the default");
-        assert_eq!(measured(&[2 * GB, 3 * GB, 2 * GB]).estimate(Some("app")), 2 * GB);
-        assert_eq!(measured(&[0, 0, 0]).estimate(Some("app")), MEASURED_PEAK_FLOOR_BYTES);
-    }
-
-    #[test]
-    fn a_stray_reading_is_cut_and_does_not_decide_the_estimate() {
+    fn a_stray_reading_is_cut_before_it_counts_in_the_average() {
         let estimates = measured(&[4 * GB, 5 * GB, 80 * GB, 3 * GB]);
         assert_eq!(estimates.0["app"].peaks[2], PEAK_CEILING_BYTES);
-        assert_eq!(estimates.estimate(Some("app")), 5 * GB, "the second highest");
+        assert_eq!(estimates.estimate(Some("app")), 10_500_000_000, "the average with the stray reading cut at 30 GB");
     }
 
     #[test]
-    fn many_short_turns_without_a_build_do_not_lower_the_estimate_while_two_builds_are_recent() {
+    fn many_short_turns_without_a_build_lower_the_estimate_to_their_average() {
         let mut peaks = vec![9 * GB, 10 * GB];
         peaks.extend([GB / 10; 10]);
-        assert_eq!(measured(&peaks).estimate(Some("app")), 9 * GB);
+        assert_eq!(measured(&peaks).estimate(Some("app")), 1_666_666_666);
         peaks.push(GB / 10);
-        assert_eq!(measured(&peaks).estimate(Some("app")), MEASURED_PEAK_FLOOR_BYTES, "the builds left the latest 12");
+        assert_eq!(measured(&peaks).estimate(Some("app")), MEASURED_PEAK_FLOOR_BYTES, "the builds left the latest 12: never under 1 GB");
     }
 
     #[test]
