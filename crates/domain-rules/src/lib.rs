@@ -17,6 +17,8 @@ mod answered_card_tests;
 #[cfg(test)]
 mod attention_tests;
 #[cfg(test)]
+mod task_flow_tests;
+#[cfg(test)]
 mod card_contract_tests;
 #[cfg(test)]
 mod card_protocol_tests;

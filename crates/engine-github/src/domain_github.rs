@@ -220,7 +220,7 @@ fn pending<'a>(state: &'a DomainState, pr: &PullRequest) -> Option<&'a OpenPrPen
 async fn read_held(domain: &DomainRuntime, observer: &impl PrObserver) -> Result<()> {
     let Some(port) = domain.ports().spec_worktrees() else { return Ok(()) };
     let state = domain.state()?;
-    for task in state.tasks.values().filter(|task| task.stages.staged && matches!(task.open_pr, Some(OpenPrPending::Deliver { .. }))) {
+    for task in state.tasks.values().filter(|task| task.gated() && matches!(task.open_pr, Some(OpenPrPending::Deliver { .. }))) {
         let mut tips = std::collections::BTreeMap::new();
         for pr in state.open_prs(task).filter(|pr| task.validation.reading_of(&pr.head, false).is_none()) {
             let Ok(facts) = observer.observe(&pr.host, &pr.repository, pr.number).await else { continue };

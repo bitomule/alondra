@@ -391,10 +391,17 @@ that reason on the task, so write it for them in one line.
   40,000 tokens each; a small task never pays it.
 - An independent adversarial review stays a separate task (`role: review`, tags `kind: review`)
   when the work needs one, with the review relations above.
-- **In a project with specs** (its `alondra.toml` turns them on), a task that changes behaviour
-  goes in stages: only an author proposes specs, and only the user approves them. A task whose
-  work changes no behaviour (a refactor, documentation) may stay small; it cannot change a spec,
-  boundary or decision, and its delivery is refused if it does.
+- **In a project with specs** (its `alondra.toml` turns them on), only the user approves specs. A
+  large task that changes behaviour goes in stages: its author proposes the specs and a separate
+  validator checks the work. Simple work may stay without stages: its own node proposes the specs
+  with its plan, the user approves them on that plan's card, and the same node validates the work
+  against them before it delivers; its delivery says the same agent validated it. Choose stages
+  when the work needs an independent check.
+- **A task that continues another** (`continues`) takes in the same step the original's open
+  worktrees, its checklist and its open pull requests. Cancelling the original then raises no card
+  and closes nothing, and the original never gets a new agent while its continuation is not
+  finished (`task_continued`). A continuation is refused (`delivery_open`) while the original's
+  delivery waits for the user: let the user settle it first.
 
 ### Plans in phases
 

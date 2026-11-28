@@ -357,6 +357,14 @@ approves them with it, and nothing changes them afterwards without the user's ap
 keeps them in the task (`TaskSpecs`, M-LIFE-16 of `docs/architecture/state-machines.md`) and reads
 every set with this engine over the task's worktree: never what an agent says about them.
 
+A task in stages proposes them through its author and validates them through a separate agent. A
+task without stages does both with its one agent (`task-flow.specs-without-stages`): its first
+input says so (`## Specs in this project`), it proposes the specs with `propose_specs` and a plan,
+the user approves them on that plan's card, and the same agent goes on, validates its work in a
+round of its own and passes the same gate. A delivery refused with `specs_differ` for files it
+already wrote tells it to propose them as the branch holds them and present a plan. Its delivery
+says that the agent that did the work validated it.
+
 ### Proposed with the plan
 
 A task that changes behaviour in such a project goes in stages. Its author designs the specs with
@@ -509,8 +517,11 @@ what it recorded; what it owed is `incomplete` and is owed again when the task g
 
 ### The gate
 
-A final delivery of a task in stages is read on its commit before it reaches the user, within the
-time the delivery review gives git:
+A final delivery of a task in stages, or of a task without stages whose specs the user approved, is
+read on its commit before it reaches the user, within the time the delivery review gives git. A
+task without stages and without approved specs delivers as before, refused only by `specs_differ`
+when its branch changes a spec, boundary or decision. In a task without stages,
+`validation_required` tells its agent to call `ready_for_validation` and validate the work itself:
 
 | Refusal | When |
 |---|---|

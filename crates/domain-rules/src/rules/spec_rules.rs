@@ -17,15 +17,12 @@ pub(crate) fn check_refusal(check: &SpecCheck) -> Result<()> {
         _ => Ok(()),
     }
 }
-/// The author proposes the specs that go with its plan: the plan's card shows them, the user
-/// edits them there, and approving the plan approves this exact set.
+/// The author of a task in stages, or the agent of a task without them, proposes the specs that go
+/// with its plan: the plan's card shows them, the user edits them there, and approving the plan
+/// approves this exact set.
 pub(crate) fn propose_specs(domain: &mut DomainState, actor: &Actor, task_id: &TaskId, level: SpecLevel, files: &[SpecFile], check: &SpecCheck) -> Result<()> {
     role_allows(domain, actor, task_id, RoleTool::ProposeSpecs)?;
     let task = domain.assigned(actor, task_id)?;
-    if !task.stages.staged {
-        return refuse("specs_need_stages", "task_id",
-            "Specs are proposed by the author of a task in stages, and this task has none. Deliver without changing any spec; if the work needs new specs, tell the orchestrator with ask so it plans a task in stages for them");
-    }
     if task.specs.approved.as_ref().is_some_and(|approved| domain.holds.get(&approved.card) == Some(&Hold::Plan)) {
         return refuse("specs_approved", "task_id",
             "The user already approved this task's specs: a change to them goes through request_spec_change, never a new proposal");
@@ -141,8 +138,9 @@ pub(crate) fn request_spec_change(domain: &mut DomainState, actor: &Actor, task_
     if task.specs.approved.is_none() {
         return refuse("no_approved_specs", "task_id", "This task has no approved specs to change: deliver what the plan asks, or ask the user");
     }
-    if task.stages.role() != Some(ExecutionRole::Implementer) {
-        return refuse("specs_need_stages", "task_id", "Only the implementer of a task in stages asks for a change of its specs");
+    let itself = !task.stages.staged;
+    if task.stages.role() != Some(ExecutionRole::Implementer) && !itself {
+        return refuse("specs_need_stages", "task_id", "Only the implementer of a task in stages, or the agent of a task without them, asks for a change of its specs");
     }
     if task.specs.amendments.iter().any(|a| matches!(a.state, AmendmentState::Requested | AmendmentState::Proposed)) || task.stages.handover.is_some() {
         return refuse("spec_change_pending", "task_id",
@@ -152,6 +150,11 @@ pub(crate) fn request_spec_change(domain: &mut DomainState, actor: &Actor, task_
     let id = format!("a{next}");
     let task = domain.tasks.get_mut(task_id).expect("assigned");
     task.specs.amended(SpecAmendment { id: id.clone(), reason: reason.trim().to_owned(), state: AmendmentState::Requested, files: SpecFiles::new(), before: BTreeMap::new(), check: None, card: None, words: None });
+    if itself {
+        let text = format!(
+            "Draft the change of the specs you asked for yourself: call propose_amendment with amendment_id {id} and every spec, boundary or decision file it changes, whole, or with no files if the approved specs already cover it. The user decides it on its card; carry on meanwhile with what does not depend on it.");
+        return tell(domain, task_id, text, lifecycles);
+    }
     task.stages.handover = Some(StageHandover { to: ExecutionRole::Author, cause: HandoverCause::SpecChangeRequested { amendment: id }, transition: None, attempts: 0, refused: false });
     let input = domain.next_input(task_id);
     domain.decide(lifecycles, task_id, LifecycleRecord::Told { input, text: Some(stage_input(ExecutionRole::Author)), answers: None })
@@ -169,11 +172,15 @@ pub(crate) fn propose_amendment(domain: &mut DomainState, actor: &Actor, task_id
     let Some(approved) = task.specs.approved.clone() else {
         return refuse("no_approved_specs", "task_id", "This task has no approved specs to change");
     };
+    let itself = !task.stages.staged;
     if files.is_empty() {
         let task = domain.tasks.get_mut(task_id).expect("assigned");
         let amendment = task.specs.amendments.iter_mut().find(|a| a.id == requested.id).expect("found above");
         amendment.state = AmendmentState::Rejected;
         amendment.words = Some("The author found the approved specs already cover it: nothing changes".into());
+        if itself {
+            return Ok(());
+        }
         task.stages.handover = Some(StageHandover { to: ExecutionRole::Implementer, cause: HandoverCause::AmendmentProposed { amendment: requested.id.clone() }, transition: None, attempts: 0, refused: false });
         let input = domain.next_input(task_id);
         let text = format!("{} The author found that the approved specs already cover what you asked («{}»): they stay as they are.", stage_input(ExecutionRole::Implementer), requested.reason);
@@ -195,6 +202,9 @@ pub(crate) fn propose_amendment(domain: &mut DomainState, actor: &Actor, task_id
     amendment.card = Some(card_id.clone());
     let body = SpecCard::Amendment { task: task_id.0.clone(), id: requested.id.clone() };
     raise_spec_card(domain, &card_id, task_id, &body, effects, created)?;
+    if itself {
+        return Ok(());
+    }
     let task = domain.tasks.get_mut(task_id).expect("assigned");
     task.stages.handover = Some(StageHandover { to: ExecutionRole::Implementer, cause: HandoverCause::AmendmentProposed { amendment: requested.id }, transition: None, attempts: 0, refused: false });
     let input = domain.next_input(task_id);

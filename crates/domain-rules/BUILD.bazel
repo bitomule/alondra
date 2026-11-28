@@ -48,6 +48,7 @@ low_opt_rust_test(
         "fixtures/inbox_order.json",
         "//:docs/architecture/cards.md",
         "//:docs/architecture/state-machines.md",
+        "//:specs/task-flow/boundary.toml",
         "//crates/domain-model:scanned_sources",
     ],
     crate_name = "alondra_domain_rules",

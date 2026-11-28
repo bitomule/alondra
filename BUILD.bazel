@@ -63,7 +63,7 @@ exports_files(
 )
 
 exports_files(
-    ["docs/architecture/cards.md"],
+    ["docs/architecture/cards.md", "specs/task-flow/boundary.toml"],
     visibility = ["//crates/domain-rules:__pkg__"],
 )
 

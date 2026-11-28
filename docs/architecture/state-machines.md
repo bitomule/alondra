@@ -1122,7 +1122,7 @@ truth = ["sqlite:task_validations"]
 states = "crates/domain-model/src/validation.rs::RoundState"
 variants = ["Requested", "Validating", "Interrupted", "Failed", "Delivered"]
 terminals = ["Failed", "Delivered"]
-initial = ["Requested"]
+initial = ["Requested", "Validating"]
 transitions = ["Requested -> Validating", "Validating -> Interrupted", "Interrupted -> Validating", "Validating -> Failed", "Validating -> Delivered", "Delivered -> Validating"]
 ```
 
@@ -1144,9 +1144,10 @@ transitions = ["Requested -> Validating", "Validating -> Interrupted", "Interrup
 | From | Event [guard] | Result |
 |---|---|---|
 | no open round | `ReadyForValidation` [the implementer of a staged task, no handover, no open change of specs, no decision card, a commit, items not empty] | `Requested`; handover to `Validator` (`ReadyForValidation`) |
+| no open round | `ReadyForValidation` [the agent of a task without stages whose specs the user approved, a commit, items not empty] | `Validating` at once, with that agent's generation: it validates its own work, and no handover follows |
 | `Requested`, `Interrupted` | a run in the validator's role is admitted, or its host is taken over | `Validating` with its generation; incomplete items owed again |
 | `Validating` | the validator's host is lost | `Interrupted`; what it owed is `Incomplete`, what it recorded stays; the lost host's own path follows |
-| `Validating` | `EndValidation` [an item `Unmet`] | `Failed`; `failed + 1`; handover to `Implementer` (`ValidationFailed`), or at the third the `system:spec_change` card `ValidationExhausted` |
+| `Validating` | `EndValidation` [an item `Unmet`] | `Failed`; `failed + 1`; handover to `Implementer` (`ValidationFailed`), or at the third the `system:spec_change` card `ValidationExhausted`; a task without stages tells the same agent what is unmet instead of any handover |
 | `Validating` | `EndValidation` [no item `Unmet`, `head` ≠ `implemented`] | `Failed` without counting; handover to `Implementer` (`ValidationFailed`): the commits the pull request received after the implementer's are the implementer's to take |
 | `Validating` | `EndValidation` [no item `Unmet`, some owed] | `Interrupted`; handover to a new `Validator` (`ValidatorRetry`, which a validator owes too), or, already retried, the card `ValidationStuck` |
 | `Validating` | `RecordValidation` | `items` become what the engine lists on `head` as Alondra read it, keeping the state of an item at the same fingerprint (`Running` otherwise), then the record applies |

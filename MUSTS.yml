@@ -605,6 +605,7 @@ checks:
       - "crates/foundation/**"
       - "crates/spec-engine/**"
       - "docs/architecture/cards.md"
+      - "specs/task-flow/boundary.toml"
       - "bazel/rules/BUILD.bazel"
       - "bazel/rules/rust_inputs_test.bzl"
       - "bazel/rules/rust_sources.bzl"

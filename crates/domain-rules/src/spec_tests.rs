@@ -112,7 +112,7 @@ fn the_author_proposes_the_plans_specs_and_the_plan_card_waits_for_them() {
 }
 
 #[test]
-fn a_proposal_is_refused_where_specs_are_off_unreadable_or_without_stages() {
+fn a_proposal_is_refused_where_specs_are_off_or_unreadable() {
     let mut s = running(true);
     let off = Command::ProposeSpecs { task_id: "t".into(), level: SpecLevel::Light, files: files(&[(PARTIAL_PATH, Some(PARTIAL))]), check: SpecCheck::default() };
     assert_eq!(exec(&mut s, node("a"), off).unwrap_err().code, "specs_disabled");
@@ -125,8 +125,6 @@ fn a_proposal_is_refused_where_specs_are_off_unreadable_or_without_stages() {
         check: SpecCheck::unreadable(SpecProblem::new("invalid_settings", "alondra.toml", 2, "expected `]`")) };
     assert_eq!(exec(&mut s, node("a"), settings).unwrap_err().code, "spec_settings_unreadable");
     assert_eq!(specs_of(&s).draft, None);
-    let mut single = running(false);
-    assert_eq!(exec(&mut single, node("a"), proposal(&[(PARTIAL_PATH, Some(PARTIAL))])).unwrap_err().code, "specs_need_stages");
 }
 
 #[test]

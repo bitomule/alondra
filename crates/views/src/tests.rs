@@ -15,6 +15,8 @@ mod client_language_tests;
 mod merge_message_tests;
 #[path = "spec_view_tests.rs"]
 mod spec_view_tests;
+#[path = "task_flow_tests.rs"]
+mod task_flow_tests;
 
 fn inbox_badge(state: &DomainState) -> u32 {
     super::inbox_badge(&alondra_domain_model::ReadIndex::build(state))

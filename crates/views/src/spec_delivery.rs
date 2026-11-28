@@ -235,6 +235,11 @@ pub(super) fn delivery_section(interaction: &Interaction, context: &RenderContex
 fn delivered_items(delivered: &DeliveredValidation, task: &Task, context: &RenderContext<'_>) -> Vec<Item> {
     let lang = context.lang;
     let mut items = vec![];
+    items.push(plain(if task.stages.staged {
+        t!(lang, "Validated by a separate agent.", "Validado por otro agente.").into()
+    } else {
+        t!(lang, "Validated by the same agent that did the work.", "Validado por el mismo agente que hizo el trabajo.").into()
+    }));
     let scenarios: usize = delivered.specs.iter().map(|spec| spec.scenarios.len()).sum();
     if scenarios == 0 {
         items.push(plain(t!(lang, "This change touches no spec.", "Este cambio no toca ninguna spec.").into()));
