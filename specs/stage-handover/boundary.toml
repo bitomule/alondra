@@ -1,0 +1,23 @@
+id = "stage-handover"
+owns = [
+  "crates/engine-kernel/src/stage_packet.rs",
+  "crates/store/src/context_handoff.rs",
+]
+
+[[suite]]
+id = "kernel"
+run = ["bazelisk", "test", "//crates/engine-kernel:engine_kernel_test"]
+tests = ["crates/engine-kernel/src/stage_packet_tests.rs"]
+timeout_minutes = 60
+
+[[suite]]
+id = "store"
+run = ["bazelisk", "test", "//crates/store:store_test"]
+tests = ["crates/store/src/context_handoff.rs"]
+timeout_minutes = 60
+
+[[suite]]
+id = "sdk"
+run = ["bazelisk", "test", "//crates/engine-sdk:engine_sdk_test"]
+tests = ["crates/engine-sdk/src/sdk_owner/stage_tests.rs"]
+timeout_minutes = 60
