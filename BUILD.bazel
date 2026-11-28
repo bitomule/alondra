@@ -43,10 +43,15 @@ exports_files(
     visibility = ["//crates/spec-engine:__pkg__"],
 )
 
-# What `alondra.toml` names: the specs with their ledger, the decisions and the reference prose.
+# What `alondra.toml` names: the specs with their ledger, the decisions and the reference prose,
+# and the sources and tests of each component but the spec engine, which lists its own.
 filegroup(
     name = "spec_files",
-    srcs = glob(["specs/**", "docs/decisions/**", "docs/reference/**"]),
+    srcs = glob(["specs/**", "docs/decisions/**", "docs/reference/**"]) + [
+        "//crates/domain-model:task_flow_files",
+        "//crates/domain-rules:task_flow_files",
+        "//crates/views:task_flow_files",
+    ],
     visibility = ["//crates/spec-engine:__pkg__"],
 )
 

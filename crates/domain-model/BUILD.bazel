@@ -102,4 +102,16 @@ filegroup(
     visibility = ["//crates/domain-rules:__pkg__"],
 )
 
+# What the component task-flow owns here, for the test that validates the repository's specs.
+filegroup(
+    name = "task_flow_files",
+    srcs = [
+        "src/checks/open_pr.rs",
+        "src/checks/spec_rules.rs",
+        "src/delivery_validation.rs",
+        "src/stages.rs",
+    ],
+    visibility = ["//:__pkg__"],
+)
+
 repo_tree()
