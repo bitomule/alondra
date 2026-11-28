@@ -322,7 +322,7 @@ impl DomainState {
                 return DeliveryCheck::SpecChangeOpen;
             }
             let items: Vec<ValidationItem> = reading.ledger.iter()
-                .filter(|entry| task.validation.record(&entry.subject, entry.kind, &entry.inputs).is_none_or(|record| record.verdict != entry.verdict))
+                .filter(|entry| self.validation_record(task_id, &entry.subject, entry.kind, &entry.inputs).is_none_or(|record| record.verdict != entry.verdict))
                 .map(|entry| ValidationItem { subject: entry.subject.clone(), kind: entry.kind, inputs: entry.inputs.clone() })
                 .collect();
             if !items.is_empty() || !reading.stray.is_empty() {
@@ -421,6 +421,24 @@ impl DomainState {
         task.stages.handover = Some(next);
         let input = self.next_input(task_id);
         self.decide(lifecycles, task_id, LifecycleRecord::Told { input, text: Some(crate::stage_input(to)), answers: None })
+    }
+}
+
+impl DomainState {
+    /// The latest record a validator made of `subject`, `kind` and `inputs` for `task_id`, or for
+    /// the first task along its chain of continuations that has one. The walk stops at a task that
+    /// is missing or already seen, so a cycle in the stored data ends it.
+    pub fn validation_record(&self, task_id: &TaskId, subject: &str, kind: ValidationKind, inputs: &str) -> Option<&crate::validation::ValidationRecord> {
+        let mut seen = std::collections::BTreeSet::new();
+        let mut next = Some(task_id);
+        while let Some(id) = next.filter(|id| seen.insert(*id)) {
+            let task = self.tasks.get(id)?;
+            if let Some(record) = task.validation.record(subject, kind, inputs) {
+                return Some(record);
+            }
+            next = task.continues.as_ref();
+        }
+        None
     }
 }
 

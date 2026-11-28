@@ -150,7 +150,9 @@ pub enum Step {
     /// nothing is presented.
     Present { task: String, id: String, #[serde(default)] prs: Vec<u64>, #[serde(default)] text: Option<String>, body: String, #[serde(default)] refused: Option<String>,
         /// Point 1 of the approved plan, marked done with each of these scenarios as its evidence.
-        #[serde(default)] scenarios: Vec<String> },
+        #[serde(default)] scenarios: Vec<String>,
+        /// Point 1 of the approved plan, marked done with each of these links as its evidence.
+        #[serde(default)] links: Vec<String> },
     /// The node of `task` asks the user `body` on the card `id`, to answer in writing, and waits
     /// on it: the turn that ends next ends on that question.
     Ask { task: String, id: String, title: String, body: String },

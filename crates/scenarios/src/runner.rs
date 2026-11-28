@@ -648,14 +648,15 @@ impl Context<'_> {
                     allowed_methods: vec![MergeMethod::Squash, MergeMethod::Merge],
                 }).await?;
             }
-            Step::Present { task, id, prs, text, body, refused, scenarios } => {
+            Step::Present { task, id, prs, text, body, refused, scenarios, links } => {
                 let mut targets = Vec::new();
                 for number in prs {
                     targets.push(DeliveryTarget::PullRequest { pr_id: self.pr_id(*number), head: self.head(index, *number)? });
                 }
                 targets.extend(text.iter().map(|text| DeliveryTarget::Text { text: text.clone() }));
                 let evidence: Vec<alondra_domain_model::Evidence> = scenarios.iter()
-                    .map(|scenario| alondra_domain_model::Evidence { kind: alondra_domain_model::EvidenceKind::Scenario, value: scenario.clone(), detail: None }).collect();
+                    .map(|scenario| alondra_domain_model::Evidence { kind: alondra_domain_model::EvidenceKind::Scenario, value: scenario.clone(), detail: None })
+                    .chain(links.iter().map(|link| alondra_domain_model::Evidence { kind: alondra_domain_model::EvidenceKind::Link, value: link.clone(), detail: None })).collect();
                 self.node_command(index, task, &format!("/tasks/{task}/results"), refused.as_deref(), Command::PresentResult {
                     checklist: if evidence.is_empty() { Vec::new() } else { vec![alondra_domain_model::ChecklistMark { item: "1".into(), evidence }] },
                     attachments: Vec::new(),
