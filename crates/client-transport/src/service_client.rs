@@ -634,11 +634,11 @@ mod tests {
         thread: Option<std::thread::JoinHandle<()>>,
     }
     impl HttpFixture {
-        fn start(replies: Vec<(u16, Value, Duration)>) -> Self {
-            Self::start_raw(replies.into_iter().map(|(status, body, delay)|
-                (status, serde_json::to_vec(&body).unwrap(), delay)).collect())
+        fn start(replies: Vec<(u16, Value)>) -> Self {
+            Self::start_raw(replies.into_iter().map(|(status, body)|
+                (status, serde_json::to_vec(&body).unwrap())).collect())
         }
-        fn start_raw(replies: Vec<(u16, Vec<u8>, Duration)>) -> Self {
+        fn start_raw(replies: Vec<(u16, Vec<u8>)>) -> Self {
             use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             listener.set_nonblocking(true).unwrap();
@@ -664,8 +664,7 @@ mod tests {
                         let Some((headers, _body)) = read_fixture_request(&mut stream, &mut pending, &stopping)
                             .expect("read fixture request") else { break; };
                         seen.lock().unwrap().push(headers);
-                        let Some((status, body, delay)) = replies.next() else { panic!("unexpected replay"); };
-                        std::thread::sleep(delay);
+                        let Some((status, body)) = replies.next() else { panic!("unexpected replay"); };
                         let header = format!("HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n", body.len());
                         if stream.write_all(header.as_bytes()).and_then(|_| stream.write_all(&body)).is_err() { break; }
                     }
@@ -741,26 +740,60 @@ mod tests {
         assert_eq!(unwinding.downcast_ref::<&str>(),Some(&"original assertion failure"));
     }
 
-    fn boot(epoch: u8) -> (u16, Value, Duration) {
-        (200, json!({"protocol":1,"epoch":B64.encode([epoch;16])}), Duration::ZERO)
+    fn boot(epoch: u8) -> (u16, Value) {
+        (200, json!({"protocol":1,"epoch":B64.encode([epoch;16])}))
     }
-    fn reply(status: u16, error: &str) -> (u16, Value, Duration) {
-        (status, json!({"error":error}), Duration::ZERO)
+    fn reply(status: u16, error: &str) -> (u16, Value) {
+        (status, json!({"error":error}))
     }
+    fn frozen() -> Instant {
+        static START: OnceLock<Instant> = OnceLock::new();
+        *START.get_or_init(Instant::now)
+    }
+    // Under the frozen clock this deadline never runs out, and a real socket gets the
+    // transport's longest per-request timeout.
     fn transport_call(t: &RelayTransport, method: &str) -> Result<(u16, Value)> {
-        t.call(&fixture().0, "owner-a", "test-bearer", method, "/v1/pairings/p", if method == "POST" { b"{}" } else { b"" }, Instant::now()+Duration::from_secs(2))
+        t.call(&fixture().0, "owner-a", "test-bearer", method, "/v1/pairings/p", if method == "POST" { b"{}" } else { b"" }, frozen()+Duration::from_secs(60))
+    }
+    type Requests = Arc<std::sync::Mutex<Vec<String>>>;
+    /// A relay that answers each request with the next reply, recording its request line and
+    /// headers, with no socket or thread to starve.
+    fn scripted_raw(replies: Vec<(u16, Vec<u8>)>) -> (RelayTransport, Requests) {
+        let replies = std::sync::Mutex::new(std::collections::VecDeque::from(replies));
+        let requests = Requests::default();
+        let seen = requests.clone();
+        let agent = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .middleware(move |request: ureq::http::Request<ureq::SendBody<'_>>,
+                              _next: ureq::middleware::MiddlewareNext<'_>| {
+                let mut text = format!("{} {}\r\n", request.method(), request.uri().path());
+                for (name, value) in request.headers() {
+                    text += &format!("{name}: {}\r\n", value.to_str().unwrap());
+                }
+                seen.lock().unwrap().push(text);
+                let (status, body) = replies.lock().unwrap().pop_front().expect("unexpected replay");
+                Ok(ureq::http::Response::builder().status(status)
+                    .body(ureq::Body::builder().data(body)).unwrap())
+            })
+            .build().new_agent();
+        let mut transport = RelayTransport::new("http://127.0.0.1");
+        transport.agent = agent;
+        transport.now = frozen;
+        (transport, requests)
+    }
+    fn scripted(replies: Vec<(u16, Value)>) -> (RelayTransport, Requests) {
+        scripted_raw(replies.into_iter().map(|(status, body)| (status, serde_json::to_vec(&body).unwrap())).collect())
     }
 
     #[test]
     fn proxy_non_json_status_is_preserved_without_post_replay_or_body_exposure() {
         for status in [401, 502] {
             let bootstrap = serde_json::to_vec(&boot(1).1).unwrap();
-            let server = HttpFixture::start_raw(vec![(200, bootstrap, Duration::ZERO),
-                (status, b"<html>private proxy diagnostic</html>".to_vec(), Duration::ZERO)]);
-            let transport = RelayTransport::new(&server.origin);
+            let (transport, requests) = scripted_raw(vec![(200, bootstrap),
+                (status, b"<html>private proxy diagnostic</html>".to_vec())]);
             let response = transport_call(&transport, "POST").unwrap();
             assert_eq!(response, (status, Value::Null));
-            assert_eq!(server.requests.lock().unwrap().len(), 2);
+            assert_eq!(requests.lock().unwrap().len(), 2);
             if status == 401 { assert!(transport.epoch.lock().unwrap().value.is_none()); }
         }
     }
@@ -768,11 +801,11 @@ mod tests {
     #[test]
     fn successful_non_json_response_remains_an_error_without_body_exposure() {
         let bootstrap = serde_json::to_vec(&boot(1).1).unwrap();
-        let server = HttpFixture::start_raw(vec![(200, bootstrap, Duration::ZERO),
-            (200, b"private invalid response".to_vec(), Duration::ZERO)]);
-        let error = transport_call(&RelayTransport::new(&server.origin), "POST").unwrap_err();
+        let (transport, requests) = scripted_raw(vec![(200, bootstrap),
+            (200, b"private invalid response".to_vec())]);
+        let error = transport_call(&transport, "POST").unwrap_err();
         assert_eq!(error.to_string(), "invalid relay JSON response (HTTP 200)");
-        assert_eq!(server.requests.lock().unwrap().len(), 2);
+        assert_eq!(requests.lock().unwrap().len(), 2);
     }
 
     #[test]
@@ -823,7 +856,8 @@ mod tests {
     #[test]
     fn pooled_transport_drains_error_bodies_and_bootstraps_once() {
         let server = HttpFixture::start(vec![boot(1), reply(400,"bad_request"), reply(409,"conflict"), reply(200,"ok")]);
-        let transport = RelayTransport::new(&server.origin);
+        let mut transport = RelayTransport::new(&server.origin);
+        transport.now = frozen;
         assert_eq!(transport_call(&transport,"GET").unwrap().0,400);
         assert_eq!(transport_call(&transport,"POST").unwrap().0,409);
         assert_eq!(transport_call(&transport,"GET").unwrap().0,200);
@@ -833,67 +867,78 @@ mod tests {
 
     #[test]
     fn changed_epoch_retries_read_once_with_new_nonce_but_never_post() {
-        let server = HttpFixture::start(vec![boot(1),reply(401,"unauthorized"),boot(2),reply(401,"unauthorized")]);
-        let transport = RelayTransport::new(&server.origin);
+        let (transport, requests) = scripted(vec![boot(1),reply(401,"unauthorized"),boot(2),reply(401,"unauthorized")]);
         assert_eq!(transport_call(&transport,"GET").unwrap().0,401);
-        let seen = server.requests.lock().unwrap();
+        let seen = requests.lock().unwrap();
         assert_eq!(seen.len(),4);
         assert!(seen[1].contains(&B64.encode([1;16])));
         assert!(seen[3].contains(&B64.encode([2;16])));
         let nonce = |headers: &str| headers.lines().find(|l| l.starts_with("x-device-nonce:")).unwrap().to_string();
         assert_ne!(nonce(&seen[1]),nonce(&seen[3]));
         drop(seen);
-        let server = HttpFixture::start(vec![boot(1),reply(401,"unauthorized")]);
-        let transport = RelayTransport::new(&server.origin);
+        let (transport, requests) = scripted(vec![boot(1),reply(401,"unauthorized")]);
         assert_eq!(transport_call(&transport,"POST").unwrap().0,401);
-        assert_eq!(server.count(),2);
+        assert_eq!(requests.lock().unwrap().len(),2);
         assert!(transport.epoch.lock().unwrap().value.is_none());
     }
 
     #[test]
     fn unchanged_epoch_and_conflict_do_not_trigger_replay() {
-        let server = HttpFixture::start(vec![boot(1),reply(401,"unauthorized"),boot(1),reply(409,"conflict"),reply(200,"ok")]);
-        let transport = RelayTransport::new(&server.origin);
+        let (transport, requests) = scripted(vec![boot(1),reply(401,"unauthorized"),boot(1),reply(409,"conflict"),reply(200,"ok")]);
         assert_eq!(transport_call(&transport,"GET").unwrap().0,401);
-        assert_eq!(server.count(),3);
+        assert_eq!(requests.lock().unwrap().len(),3);
         assert_eq!(transport_call(&transport,"GET").unwrap().0,409);
         assert_eq!(transport_call(&transport,"GET").unwrap().0,200);
-        assert_eq!(server.count(),5);
+        assert_eq!(requests.lock().unwrap().len(),5);
     }
 
     #[test]
     fn a_refused_epoch_is_dropped_and_an_old_failure_cannot_erase_the_new_one() {
-        let server = HttpFixture::start(vec![boot(1),reply(401,"unauthorized"),boot(2),reply(200,"ok")]);
-        let transport = RelayTransport::new(&server.origin);
+        let (transport, requests) = scripted(vec![boot(1),reply(401,"unauthorized"),boot(2),reply(200,"ok")]);
         assert_eq!(transport_call(&transport,"POST").unwrap().0,401);
         assert_eq!(transport_call(&transport,"GET").unwrap().0,200);
         transport.invalidate([1;16]);
         assert_eq!(transport.epoch.lock().unwrap().value,Some([2;16]));
-        assert_eq!(server.count(),4);
-        assert!(transport.call(&fixture().0,"other-owner","token","POST","/v1/pairings/p",b"{}",Instant::now()+Duration::from_secs(1)).is_err());
-        assert_eq!(server.count(),4,"account switch must fail before network I/O");
+        assert_eq!(requests.lock().unwrap().len(),4);
+        assert!(transport.call(&fixture().0,"other-owner","token","POST","/v1/pairings/p",b"{}",frozen()+Duration::from_secs(1)).is_err());
+        assert_eq!(requests.lock().unwrap().len(),4,"account switch must fail before network I/O");
     }
 
     #[test]
     fn late_bootstrap_does_not_overwrite_newer_concurrent_epoch() {
-        let mut bootstrap = boot(1); bootstrap.2=Duration::from_millis(120);
-        let server = HttpFixture::start(vec![bootstrap]);
-        let transport = RelayTransport::new(&server.origin);
-        std::thread::scope(|scope| {
-            let pending = scope.spawn(|| transport.epoch(Instant::now()+Duration::from_secs(2)).unwrap());
-            let deadline = Instant::now()+Duration::from_secs(1);
-            while server.count() == 0 {
-                assert!(Instant::now()<deadline);
-                std::thread::sleep(Duration::from_millis(1));
-            }
-            {
-                let mut newer = transport.epoch.lock().unwrap();
-                newer.generation += 1;
-                newer.value = Some([2;16]);
-            }
-            assert_eq!(pending.join().unwrap(),[2;16]);
-        });
-        assert_eq!(transport.epoch.lock().unwrap().value,Some([2;16]));
+        // The newer epoch lands from inside the bootstrap while it is in flight: the
+        // interleaving of a concurrent refresh, with no thread, socket or clock to race.
+        // A refresh after an invalidation moves the generation; a concurrent bootstrap
+        // that finished first stores its epoch without moving it.
+        for invalidated in [true, false] {
+            let slot = Arc::new(OnceLock::<std::sync::Weak<RelayTransport>>::new());
+            let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let (inside, seen) = (slot.clone(), requests.clone());
+            let agent = ureq::Agent::config_builder()
+                .middleware(move |request: ureq::http::Request<ureq::SendBody<'_>>,
+                                  _next: ureq::middleware::MiddlewareNext<'_>| {
+                    seen.lock().unwrap().push(request.uri().path().to_owned());
+                    let transport = inside.get().and_then(std::sync::Weak::upgrade).unwrap();
+                    let mut newer = transport.epoch.try_lock()
+                        .expect("the epoch lock must not be held across the bootstrap");
+                    newer.generation += u64::from(invalidated);
+                    newer.value = Some([2;16]);
+                    drop(newer);
+                    Ok(ureq::http::Response::builder().status(200)
+                        .body(ureq::Body::builder().data(serde_json::to_vec(&boot(1).1).unwrap()))
+                        .unwrap())
+                })
+                .build().new_agent();
+            let mut transport = RelayTransport::new("http://127.0.0.1");
+            transport.agent = agent;
+            transport.now = frozen;
+            let transport = Arc::new(transport);
+            slot.set(Arc::downgrade(&transport)).unwrap();
+            let deadline = (transport.now)() + Duration::from_secs(1);
+            assert_eq!(transport.epoch(deadline).unwrap(), [2;16], "invalidated: {invalidated}");
+            assert_eq!(transport.epoch.lock().unwrap().value, Some([2;16]), "invalidated: {invalidated}");
+            assert_eq!(*requests.lock().unwrap(), ["/v1/bootstrap"]);
+        }
     }
 
     #[test]
