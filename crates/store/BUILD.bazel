@@ -65,6 +65,14 @@ low_opt_rust_test(
 
 exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
 
+# What the component stage-handover owns here, with its store suite: the spec engine validates it,
+# and the kernel's boundary test reads it.
+filegroup(
+    name = "stage_handover_files",
+    srcs = ["src/context_handoff.rs"],
+    visibility = ["//:__pkg__", "//crates/engine-kernel:__pkg__"],
+)
+
 # The crate's production sources: the crash report's log catalog reads them, and fails on a test
 # file among them.
 filegroup(

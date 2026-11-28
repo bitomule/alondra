@@ -6,6 +6,7 @@ use crate::domain_store::provider_transition::Phase;
 use crate::provider_transition::TransitionsOf as _;
 use alondra_engine_admission::AdmissionOf as _;
 use alondra_core::model_selection::{ModelKey, ModelProfile, TaskSelection};
+use alondra_domain_model::{SpecLevel, SpecMode, ValidationItem, ValidationKind, ValidationVerdict};
 use super::*;
 
 const TOLD: &str = "Rename the release notes file.";
@@ -118,6 +119,17 @@ fn held(domain: &DomainRuntime) -> (bool, bool) {
 fn implementer_prompt(slice: &Slice) -> String {
     slice.prompts().into_iter().find(|prompt| prompt.contains("You are the implementer of this task"))
         .unwrap_or_else(|| panic!("the implementer is told its stage: {:?}", slice.prompts()))
+}
+
+/// The last packet an implementer of the task started from, with its first input.
+fn last_implementer_prompt(slice: &Slice) -> String {
+    slice.prompts().into_iter().filter(|prompt| prompt.contains("You are the implementer of this task")).last()
+        .unwrap_or_else(|| panic!("an implementer is told its stage: {:?}", slice.prompts().iter().map(|prompt| prompt.chars().take(200).collect::<String>()).collect::<Vec<_>>()))
+}
+
+/// A file of the task's folder in Alondra's home, which the packet names by its full path.
+fn task_file(slice: &Slice, name: &str) -> std::path::PathBuf {
+    slice.domain.home().join("files/tasks").join(TASK).join(name)
 }
 
 /// Wakes after every owner commit and every published change of the domain's state.
@@ -233,7 +245,14 @@ async fn a_staged_tasks_author_hands_over_to_a_new_implementer_once_it_rests() {
     assert!(handed.pending_selection.is_none());
     assert_eq!(held(&slice.domain), (false, false), "nothing holds the implementer");
     let prompt = implementer_prompt(&slice);
-    assert!(prompt.contains("Change the fixture") && prompt.contains("Test the fixture"), "the implementer starts from the approved plan: {prompt}");
+    let (plan, record) = (task_file(&slice, "approved-plan.md"), task_file(&slice, "task-records.md"));
+    let written = std::fs::read_to_string(&plan).expect("the approved plan is written to the task's folder");
+    assert!(written.contains("Change the fixture") && written.contains("Test the fixture"), "{written}");
+    assert!(prompt.contains(&format!("{}: read it there before you start", plan.display())), "the implementer starts from the approved plan: {prompt}");
+    assert!(!prompt.contains("Change the fixture"), "the plan goes by its path: {prompt}");
+    let records = std::fs::read_to_string(&record).expect("the task's record is written to the task's folder");
+    assert!(records.contains("Write the release notes"), "{records}");
+    assert!(prompt.contains(&record.display().to_string()), "{prompt}");
     assert!(prompt.contains("as its implementer"), "{prompt}");
     assert!(!prompt.contains("decide:plan"), "the author's own prompt stays in its conversation: {prompt}");
     assert!(!prompt.contains(alondra_domain_model::HANDED_OVER_PLAN), "what the author was told stays in its conversation: {prompt}");
@@ -388,7 +407,8 @@ async fn an_author_whose_host_dies_before_its_change_of_role_starts_still_hands_
     assert!(request_stage(&slice.domain));
     handed_over(&slice, &slice.domain).await;
     assert_eq!(admissions(&slice.domain), 2);
-    assert!(implementer_prompt(&slice).contains("Change the fixture"), "the implementer starts from the approved plan");
+    assert!(implementer_prompt(&slice).contains(&task_file(&slice, "approved-plan.md").display().to_string()), "the implementer starts from the approved plan");
+    assert!(std::fs::read_to_string(task_file(&slice, "approved-plan.md")).unwrap().contains("Change the fixture"));
     slice.domain.stop_sdk_owners();
 }
 
@@ -507,5 +527,137 @@ async fn an_author_that_rested_before_its_change_of_role_started_hands_the_imple
     let prompt = implementer_prompt(&slice);
     assert!(prompt.contains("Current input:\nCarry on with this Alondra task as its implementer"), "the implementer's first input is its stage: {prompt}");
     assert!(!prompt.contains("Your turn ended without a result"), "the reminder meant for the author never reaches the implementer: {prompt}");
+    slice.domain.stop_sdk_owners();
+}
+
+const HEAD: &str = "0123456789abcdef0123456789abcdef01234567";
+
+/// The agent that works on the task now.
+fn assigned(slice: &Slice) -> Actor {
+    Actor::Agent { agent_id: slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].agent_id.clone().expect("an agent works on the task") }
+}
+
+/// Specs of 172 scenarios in four feature files, 90,000 bytes in all.
+fn large_specs() -> Vec<alondra_domain_model::SpecFile> {
+    let filler = "and the ledger of the order keeps every refund it made, with its amount, its date and its reason ".repeat(3);
+    let mut texts: Vec<String> = (0..4).map(|file| {
+        let scenarios: String = (0..43).map(|at| format!(
+            "\n  @id:s{file}-{at}\n  Scenario: Refund {at} of part {file}\n    Given a paid order of 30 EUR {filler}\n    When 10 EUR are refunded\n    Then the customer receives 10 EUR\n")).collect();
+        format!("@spec:billing.part-{file}\nFeature: Partial refunds, part {file}\n  Part of an order comes back.\n{scenarios}")
+    }).collect();
+    let short = 90_000 - texts.iter().map(String::len).sum::<usize>();
+    texts[3].push_str(&format!("\n#{}", " refunds".repeat(short / 8 + 1).chars().take(short - 2).collect::<String>()));
+    texts.into_iter().enumerate().map(|(file, text)| alondra_domain_model::SpecFile::of(format!("specs/billing/part-{file}.feature"), Some(text.into()))).collect()
+}
+
+/// An approved plan of about 120,000 bytes.
+fn large_plan() -> String {
+    let paragraph = "Refunds take the order's ledger, check what is left of it, and give back up to that amount on the card the customer paid with. ".repeat(10);
+    let mut plan = "# Refund part of an order\n\n- [ ] Refund any amount up to what is left\n- [ ] Test the refunds\n\n## Details\n".to_owned();
+    while plan.len() < 120_000 { plan.push_str(&format!("\n{paragraph}\n")); }
+    plan
+}
+
+/// Looks at the task's `nth` change of role after every change until its last step is committed
+/// and published, as `handed_over` does for the first.
+async fn handed_over_nth(slice: &Slice, nth: usize) {
+    let done = || stage_steps(slice).iter().filter(|step| *step == "done").count() >= nth;
+    let mut changes = Changes::of(&slice.domain);
+    let handing = async {
+        while !done() {
+            match look(&slice.domain).await {
+                _ if done() => break,
+                Ok(Phase::Aborted) => panic!("change of role {nth} was aborted after {:?}", stage_steps(slice)),
+                Ok(_) => {}
+                Err(error) => panic!("change of role {nth} stopped after {:?}: {}", stage_steps(slice), error.message),
+            }
+            changes.next().await;
+        }
+    };
+    if tokio::time::timeout(std::time::Duration::from_secs(60), handing).await.is_err() {
+        panic!("change of role {nth} never ended: {:?}", stage_steps(slice));
+    }
+    let ended = committed(&slice.database);
+    changes.until("the publication of the change of role's end", || slice.domain.read().state().revision >= ended).await;
+}
+
+// spec: stage-handover.packet/large-task-hands-over
+#[tokio::test]
+async fn a_task_whose_plan_and_specs_outgrew_the_old_packet_hands_over_to_its_implementer() {
+    let slice = Slice::new();
+    let task: TaskId = TASK.into();
+    let mut accounts = alondra_core::accounts::AccountsConfig::fresh();
+    accounts.connect(Provider::Claude);
+    std::fs::write(alondra_core::options::path_in(&slice._home), accounts.to_toml()).unwrap();
+    claude_ready(&slice);
+    ready(&slice, &slice.domain);
+    slice.run(&system(), "stages", Command::RecordTaskStages { task_id: task.clone(), staged: true, reason: "It changes refunds".into(), selections: on_claude() });
+    let plan = large_plan();
+    let specs = large_specs();
+    assert_eq!((plan.len() / 1000, specs.iter().map(|file| file.text.as_ref().unwrap().len()).sum::<usize>()), (120, 90_000), "the size of the live task");
+    let mut driver = slice.launch_with(&format!("decide:plan {plan}"));
+    slice.run(&Actor::Agent { agent_id: driver.agent().clone() }, "specs", Command::ProposeSpecs { task_id: task.clone(), level: SpecLevel::Full, files: specs,
+        check: alondra_domain_model::SpecCheck { mode: SpecMode::Uncommitted, ..Default::default() } });
+    slice.until(&mut driver, |slice| !Slice::open_decision_cards(&slice.domain).is_empty());
+    let card = Slice::open_decision_cards(&slice.domain).remove(0);
+    slice.answer(&card, Hold::APPROVE, None).unwrap();
+    assert!(request_stage(&slice.domain), "the approval owes the implementer");
+    let mut changes = Changes::of(&slice.domain);
+    slice.domain.add_sdk_owner(Owner::spawn(driver));
+    changes.until("the author's rest", || rests(&slice.domain)).await;
+    handed_over_nth(&slice, 1).await;
+    let items: Vec<ValidationItem> = (0..4).flat_map(|file| (0..43).map(move |at| ValidationItem {
+        subject: format!("billing.part-{file}/s{file}-{at}"), kind: ValidationKind::Adequate, inputs: format!("sha256:{file}-{at}") })).collect();
+    assert_eq!(items.len(), 172);
+    slice.run(&assigned(&slice), "ready", Command::ReadyForValidation { task_id: task.clone(), head: HEAD.into(), items: items.clone(), scope: vec![] });
+    assert!(request_stage(&slice.domain), "a validator takes over");
+    handed_over_nth(&slice, 2).await;
+    let validator = assigned(&slice);
+    let reasoning = |at: usize| format!("The test of refund {at} never checks the refunded amount");
+    for (at, item) in items.iter().take(11).enumerate() {
+        slice.run(&validator, &format!("unmet-{at}"), Command::RecordValidation { task_id: task.clone(), subject: item.subject.clone(), check: item.kind,
+            verdict: ValidationVerdict::Unmet, reasoning: Some(reasoning(at)), nearest_wrong: None, output: None, evidence: vec![], inputs: item.inputs.clone(), listed: None });
+    }
+    slice.run(&validator, "send-back", Command::EndValidation { task_id: task.clone(), findings: "11 of the 172 validations are not met".into() });
+    claude_window(&slice, None, 2);
+    assert!(request_stage(&slice.domain), "the work goes back to an implementer");
+    handed_over_nth(&slice, 3).await;
+    let state = slice.domain.state().unwrap();
+    assert!(state.open_start_problem(&task).is_none(), "no start problem is raised");
+    assert_eq!(state.tasks[&task].stages.role(), Some(ExecutionRole::Implementer));
+    assert_eq!(state.tasks[&task].selection.as_ref().and_then(|selection| selection.effective.as_ref()).map(|model| model.model.model.as_str()), Some("claude-fixture"),
+        "the implementer starts on the model with no window in its catalog");
+    let prompt = last_implementer_prompt(&slice);
+    for at in 0..11 {
+        assert!(prompt.contains(&items[at].subject) && prompt.contains(&reasoning(at)), "unmet validation {at} reaches the implementer whole: {}", prompt.chars().take(4000).collect::<String>());
+    }
+    assert!(prompt.len() < 60_000, "the packet no longer holds the plan or the specs: {} bytes", prompt.len());
+    slice.domain.stop_sdk_owners();
+}
+
+// spec: stage-handover.packet/retry-after-size-refusal
+#[tokio::test]
+async fn trying_again_a_handover_refused_for_its_size_starts_the_implementer() {
+    let slice = Slice::new();
+    let task: TaskId = TASK.into();
+    let (driver, _) = approved_author(&slice);
+    let mut changes = Changes::of(&slice.domain);
+    slice.domain.add_sdk_owner(Owner::spawn(driver));
+    changes.until("the author's rest", || rests(&slice.domain)).await;
+    for attempt in 1..=3 {
+        slice.run(&system(), &format!("refused-{attempt}"), Command::StageHandoverFailed { task_id: task.clone(), transition: None, refused: attempt == 3 });
+    }
+    slice.run(&system(), "too-large", Command::RaiseStartProblem { task_id: task.clone(), problem: StartProblem::StageStartRefused { role: ExecutionRole::Implementer,
+        error: "The task's context does not fit the destination model: it needs about 65643 tokens and 64000 are available".into() } });
+    waits_for_the_user(&slice.domain, 3);
+    assert!(!request_stage(&slice.domain), "a refused change of role waits for the user");
+    let card = slice.domain.state().unwrap().open_start_problem(&task).unwrap().id.clone();
+    slice.answer(&card.0, START_RETRY, None).unwrap();
+    assert!(request_stage(&slice.domain), "trying again starts the change of role");
+    handed_over(&slice, &slice.domain).await;
+    let state = slice.domain.state().unwrap();
+    assert_eq!(state.tasks[&task].stages.role(), Some(ExecutionRole::Implementer), "the implementer starts");
+    assert!(state.open_start_problem(&task).is_none(), "the start problem card is no longer open");
+    assert!(implementer_prompt(&slice).contains("You are the implementer of this task"));
     slice.domain.stop_sdk_owners();
 }

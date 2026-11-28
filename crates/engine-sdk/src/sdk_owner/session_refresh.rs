@@ -181,7 +181,7 @@ pub(super) fn refresh(domain: &dyn Runtime, task: &TaskId, provider: Provider, h
         Ok(scope) => scope,
         Err(error) => return resumes(&format!("{error:?}")),
     };
-    match domain.own(scope, |owner| crate::provider_transition::request_refresh(owner, task, host_directory.to_path_buf(), file.clone())) {
+    match domain.own(scope, |owner| crate::provider_transition::request_refresh(owner, domain.home(), task, host_directory.to_path_buf(), file.clone())) {
         Ok((id, _)) => {
             log!("{task} starts a new session ({id}) instead of resuming its conversation, whose prompt cache expired; {basis}; the conversation is in {}", file.display());
             true

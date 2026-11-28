@@ -40,6 +40,10 @@ pub struct World {
     /// The release the daemon runs until an `update` installs this one.
     #[serde(default = "alondra_engine_sdk::sdk_owner::backend::this_release")]
     pub release: String,
+    /// The context window, in tokens, Claude's catalog gives its model; none by default, as it
+    /// gives none today.
+    #[serde(default)]
+    pub context_window: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
