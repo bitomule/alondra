@@ -21,9 +21,15 @@ fn four_reserve() -> (DomainState, LiveSnapshot) {
     echo_waits(12 * GB, 18 * GB, vec![holder("t-a", "Alpha", 4 * GB), holder("t-b", "Beta", 3 * GB), holder("t-c", "Gamma", 2 * GB), holder("t-d", "Delta", GB)])
 }
 
-/// The waiting line of "Echo" where Tasks shows its state, on every client, and nothing after it.
+/// The waiting line of "Echo" on its row in Tasks and on its own screen, on every client, and nothing after it.
 fn reads(state: &DomainState, live: &LiveSnapshot, lang: Lang, line: &str) {
     for client in [Client::Ios, Client::Mac, Client::Tui] {
+        let (_, row) = active_row(state, live, client, lang, "t-1");
+        let listed = match client {
+            Client::Ios => row.children.iter().find(|child| child.id == "activity").map(|child| child.title.clone()),
+            _ => row.subtitle.clone(),
+        };
+        assert_eq!(listed.as_deref(), Some(line), "{client:?} {lang:?} row in Tasks");
         let said = detail_state_text(state, live, client, lang);
         assert!(said.ends_with(line), "{client:?} {lang:?}: {said}");
     }

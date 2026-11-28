@@ -253,17 +253,13 @@ fn waiting(task: &Task, waits: WaitsFor, context: &RenderContext<'_>) -> Present
         WaitsFor::Slot => {
             let (fact, place) = slot_fact(task, context);
             queue = place;
-            if place.is_some() {
-                listed = Some(match common::gate_queued(task, context).map(|queued| &queued.hold) {
-                    Some(LiveHold::Disk { .. }) => disk(),
-                    _ => t!(lang, "Starts when there is room", "Arranca cuando haya sitio").into(),
-                });
+            if place.is_some() && !matches!(common::gate_queued(task, context).map(|queued| &queued.hold), Some(LiveHold::Disk { .. })) {
+                listed = Some(t!(lang, "Starts when there is room", "Arranca cuando haya sitio").into());
             }
             fact
         }
         WaitsFor::Machine => machine_fact(task, context),
         WaitsFor::Disk => {
-            listed = Some(disk());
             match (common::gate_queued(task, context), common::held_for_disk(task, context)) {
                 (Some(queued), Some(_)) => {
                     queue = Some(queued.position);
