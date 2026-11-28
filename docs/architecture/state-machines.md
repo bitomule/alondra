@@ -1951,8 +1951,12 @@ variants = ["Requested", "Draining", "SourceFenced", "ContextReady", "TargetAdmi
 - **`Kind::Stage`** (M-LIFE-15): the change of role of a staged task. It may change account,
   provider and model. At `Draining` it waits until the source rests with nothing pending
   (`stage_drained`: no turn, no own work, no card it waits on, no doubt, no input sent to it) and
-  only then ends it; its context is the packet `launches::stage_packet` writes for the role, never
-  the conversation; at `ContextReady` it starts its target only once the gate gives the task's
+  only then ends it; its context is the short packet `stage_packet::stage_packet` writes for the
+  role, never the conversation: at `SourceFenced → ContextReady` `stage_handoff` writes the approved
+  plan (`approved-plan.md`), the task's record (`task-records.md`) and, for specs a project keeps
+  out of the repository, `specs/<path>` into `files/tasks/<task>/`, again identically on every
+  attempt, and the packet names them; a file it cannot write aborts like any other error, never as
+  a size refusal. An unknown window budgets 100,000 tokens (`UNKNOWN_WINDOW_TOKENS`); at `ContextReady` it starts its target only once the gate gives the task's
   next turn a slot (`may_take_turn`: slots and memory), else it waits there and looks again on the
   next pass. Its abort records `StageHandoverFailed` and, after the third or at once when the
   start is refused for good (`REFUSED_STARTS`), raises `StageStartRefused` for the user.
