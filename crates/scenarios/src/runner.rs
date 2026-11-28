@@ -302,6 +302,7 @@ async fn execute(
         (launcher, Backend::Given(Some(backend)), Some(Peer { seen, activity, hosts: transcripts.len() }))
     } else {
         let edge = ClaudeEdge::new(&config.home, leaks.clone());
+        edge.set_context_window(scenario.world.context_window);
         if let Some(by) = slowness.exit {
             edge.set_slow_exit(by);
         }

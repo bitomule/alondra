@@ -50,6 +50,9 @@ filegroup(
     srcs = glob(["specs/**", "docs/decisions/**", "docs/reference/**"]) + [
         "//crates/domain-model:task_flow_files",
         "//crates/domain-rules:task_flow_files",
+        "//crates/engine-kernel:stage_handover_files",
+        "//crates/engine-sdk:stage_handover_files",
+        "//crates/store:stage_handover_files",
         "//crates/views:task_flow_files",
     ],
     visibility = ["//crates/spec-engine:__pkg__"],
@@ -70,6 +73,11 @@ exports_files(
 exports_files(
     ["docs/architecture/cards.md", "specs/task-flow/boundary.toml"],
     visibility = ["//crates/domain-rules:__pkg__"],
+)
+
+exports_files(
+    ["specs/stage-handover/boundary.toml"],
+    visibility = ["//crates/engine-kernel:__pkg__"],
 )
 
 exports_files(

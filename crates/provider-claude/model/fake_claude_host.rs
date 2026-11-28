@@ -132,6 +132,8 @@ struct World {
     /// Claude keeps working on the first prompt of each host and leaves the rest unread in that
     /// turn, as the fake native Claude does once the test drops `.hold`.
     hold: bool,
+    /// The context window Claude's catalog gives its model; none, as Claude's catalog gives today.
+    context_window: Option<u64>,
 }
 
 /// What went wrong between the daemon and the hosts, or something a host was asked it does not do.
@@ -455,6 +457,11 @@ impl ClaudeModel {
     /// what each request read from the prompt cache and wrote to it, a resumed session's first
     /// request writing its whole conversation again, as one whose cache expired does, and Claude
     /// Code keeps each session's transcript where it keeps a real one.
+    /// The context window Claude's catalog gives its model from the next look at it on.
+    pub fn set_context_window(&self, window: Option<u64>) {
+        lock(&self.0.world).context_window = window;
+    }
+
     pub fn set_conversation(&self, task: &str, tokens: u64) {
         let running = self.running(task);
         let mut world = lock(&self.0.world);
@@ -1631,8 +1638,9 @@ impl ClaudeModel {
             return answer(json!({"plan": "max", "rate_limits_available": true, "windows": [session, {"kind": "seven_day", "used": 0.1}]}));
         }
         if args.iter().any(|arg| arg == "--model-probe") {
+            let window = lock(&self.0.world).context_window;
             return answer(json!({"native_default": MODEL, "models": [{"model": MODEL, "display_name": "Demo model", "reasoning_efforts": ["high"],
-                "default_reasoning_effort": "high", "input_modalities": ["text"], "is_default": true}]}));
+                "default_reasoning_effort": "high", "input_modalities": ["text"], "is_default": true, "context_window": window}]}));
         }
         let what = std::iter::once(run.command.get_program().to_string_lossy().into_owned()).chain(args).collect::<Vec<_>>().join(" ");
         let what = format!("process {what}");

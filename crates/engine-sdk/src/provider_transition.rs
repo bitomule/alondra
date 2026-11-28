@@ -236,9 +236,9 @@ fn refresh_handoff(state:&DomainState,plan:&Plan,canonical:&str,entries:&[Contex
 }
 /// The context the new execution of `plan` starts from: the task's canonical context and its
 /// retained public records, within the window of the model it starts with.
-fn handoff(owner:&mut dyn OwnerJournal,plan:&Plan)->Result<PreparedHandoff,StoreError>{
+fn handoff(owner:&mut dyn OwnerJournal,plan:&Plan,home:&std::path::Path)->Result<PreparedHandoff,StoreError>{
     let task=owner.state().tasks.get(&plan.task).ok_or_else(||failure("Task missing"))?;
-    if plan.kind==Kind::Stage{return stage_handoff(owner.state(),plan)}
+    if plan.kind==Kind::Stage{return stage_handoff(owner.state(),plan,home)}
     let canonical=critical_context(owner.state(),task)?;
     let mut entries:Vec<ContextEntry>=vec![];let mut after=None;let mut coverage;
     loop{
@@ -255,12 +255,31 @@ fn handoff(owner:&mut dyn OwnerJournal,plan:&Plan)->Result<PreparedHandoff,Store
     alondra_store::prepare_context_handoff(&canonical,"Continue this Alondra task from its public records. The user changed its provider or model. Preserve completed work and answer through Alondra.",&entries,&coverage,None,HandoffBudget{destination_context_tokens:window,reserved_tokens:alondra_store::HANDOFF_RESERVED_TOKENS}).map_err(|error|failure(handoff_refusal(error)).into())
 }
 /// What a stage's new execution starts from: the packet Alondra writes for its role, never the
-/// conversation before it.
-fn stage_handoff(state:&DomainState,plan:&Plan)->Result<PreparedHandoff,StoreError>{
+/// conversation before it. The approved plan, the task's record and the specs a project keeps out
+/// of the repository go to the task's folder in `home`, written again on every attempt, and the
+/// packet names them.
+fn stage_handoff(state:&DomainState,plan:&Plan,home:&std::path::Path)->Result<PreparedHandoff,StoreError>{
+    use alondra_engine_kernel::stage_packet::{self,StageFileBody};
     let task=state.tasks.get(&plan.task).ok_or_else(||failure("Task missing"))?;
     let role=plan.role.ok_or_else(||failure("A change of role names the role it hands over to"))?;
-    let packet=alondra_engine_kernel::launches::stage_packet(state,task,role,&plan.source.directory,branch_of(&plan.source.directory).as_deref())
-        .map_err(|missing|failure(format!("Critical task context is missing: {}",missing.join(", "))))?;
+    let missing=|missing:Vec<String>|failure(format!("Critical task context is missing: {}",missing.join(", ")));
+    let folder=alondra_engine_ports::files_retention::task_scratch(home,&task.id.0).ok_or_else(||failure("The task has no folder of its own"))?;
+    let packet=stage_packet::stage_packet(state,task,role,&plan.source.directory,branch_of(&plan.source.directory).as_deref(),&folder.display().to_string()).map_err(missing)?;
+    let images=alondra_engine_ports::kept_images::HomeImages::new(home);
+    for file in stage_packet::stage_files(state,task).map_err(missing)?{
+        let bytes=match file.body{
+            StageFileBody::Text(text)=>text.into_bytes(),
+            StageFileBody::Spec(alondra_domain_model::specs::SpecContent::Text(text))=>text.clone().into_bytes(),
+            StageFileBody::Spec(alondra_domain_model::specs::SpecContent::Mockup(image))=>alondra_domain_model::specs::KeptImages::read(&images,image)
+                .ok_or_else(||failure(format!("The copy of the mockup {} is gone from Alondra's files",file.path)))?,
+        };
+        if std::path::Path::new(&file.path).components().any(|part|!matches!(part,std::path::Component::Normal(_))){
+            return Err(failure(format!("{} is not a path inside the task's folder",file.path)).into())
+        }
+        let path=folder.join(&file.path);
+        if let Some(parent)=path.parent(){std::fs::create_dir_all(parent).map_err(|error|failure(format!("The task's folder could not be made: {error}")))?;}
+        alondra_foundation::save::atomic(&path,&bytes).map_err(|error|failure(format!("{} could not be written: {error}",file.path)))?;
+    }
     let window=state.model_catalogs.iter().find(|catalog|catalog.account==plan.target_account).and_then(|catalog|catalog.models.iter().find(|model|model.model==plan.target_model.model.model)).and_then(|model|model.context_window);
     alondra_store::prepare_context_handoff(&packet,&stage_input(role),&[],&alondra_store::HistoryCoverage::default(),None,HandoffBudget{destination_context_tokens:window,reserved_tokens:alondra_store::HANDOFF_RESERVED_TOKENS})
         .map_err(|error|failure(handoff_refusal(error)).into())
@@ -332,7 +351,7 @@ fn stage_drained(domain:&dyn Runtime,plan:&Plan)->Result<bool,DomainError>{
 }
 fn prepare_context(domain:&dyn Runtime,plan:&Plan)->Result<PreparedHandoff,DomainError>{
     domain.own(scope(domain)?,|owner|{
-        let prepared=handoff(owner,plan)?;
+        let prepared=handoff(owner,plan,domain.home())?;
         if let Some(through)=&prepared.coverage.through{owner.pin_context(&plan.id,through)?;}
         owner.provider_transition_phase(&plan.id,Phase::SourceFenced,Phase::ContextReady,serde_json::to_value(&prepared).map_err(failure)?)?;
         Ok(prepared)
@@ -344,13 +363,13 @@ fn prepare_context(domain:&dyn Runtime,plan:&Plan)->Result<PreparedHandoff,Domai
 /// task keeps a pending selection equal to its own until the new session took its input, so every
 /// hold of a selection change holds it meanwhile. Nothing is requested when the handoff could not
 /// be prepared now.
-pub(crate) fn request_refresh(owner:&mut dyn OwnerJournal,task:&TaskId,host_directory:std::path::PathBuf,conversation_file:std::path::PathBuf)->Result<String,StoreError>{
+pub(crate) fn request_refresh(owner:&mut dyn OwnerJournal,home:&std::path::Path,task:&TaskId,host_directory:std::path::PathBuf,conversation_file:std::path::PathBuf)->Result<String,StoreError>{
     let source=owner.selection_source(task,host_directory)?;
     let intent=source.selection.clone().ok_or_else(||failure("The task has no model selection"))?;
     let target_model=intent.effective.clone().ok_or_else(||failure("The execution's model is unknown"))?;
     let plan=Plan{id:format!("refresh-{}",alondra_foundation::random_hex(16)),kind:Kind::Refresh,task:task.clone(),expected_selection:owner.state().task_selection_stamp(task).unwrap_or_default(),
         target_account:source.account.clone(),target_model,intent,reason:"The prompt cache of the conversation expired".into(),conversation_file:Some(conversation_file),role:None,source};
-    handoff(owner,&plan)?;
+    handoff(owner,&plan,home)?;
     owner.validate_selection_source(&plan)?;
     let pending=PendingTaskSelection{account:plan.target_account.clone(),model:plan.target_model.clone(),reason:plan.reason.clone()};
     let command=CommandEnvelope{protocol_version:PROTOCOL_VERSION,data_epoch:owner.state().data_epoch.clone(),command_id:format!("{}-pending",plan.id).as_str().into(),expected_revision:0,

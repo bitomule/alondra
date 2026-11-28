@@ -37,6 +37,7 @@ pub mod metrics_capture;
 pub mod retention;
 pub mod sdk_backend;
 pub mod settings_projection;
+pub mod stage_packet;
 pub mod start_failures;
 pub mod untaken;
 

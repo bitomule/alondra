@@ -6,9 +6,10 @@ use sha2::{Digest, Sha256};
 
 /// What the earlier public conversation may add to the task's records in a handoff.
 pub const HANDOFF_TOKEN_CAP: u64 = 16_000;
-/// What a handoff may take when the destination model's window is unknown: well under the
-/// smallest window of the models Alondra runs, 200,000 tokens.
-pub const UNKNOWN_WINDOW_TOKENS: u64 = 64_000;
+/// What a handoff may take when the destination model's window is unknown, as it is for Claude,
+/// Codex and Antigravity: well under the smallest window of the models Alondra runs, 200,000
+/// tokens.
+pub const UNKNOWN_WINDOW_TOKENS: u64 = 100_000;
 /// What a handoff leaves free in the destination's window for its answer.
 pub const HANDOFF_RESERVED_TOKENS: u64 = 4_096;
 
@@ -241,6 +242,32 @@ mod tests {
         assert!(prepare_context_handoff("Task", "New", &unsorted, &HistoryCoverage::default(), None, budget()).is_err());
     }
 
+
+    /// Records whose context, with the header the handoff puts over them, is estimated at `tokens`.
+    fn records_of(tokens: u64) -> String {
+        let header = estimated_tokens("Alondra task context (public records)\n\n") * 3;
+        "r".repeat((tokens * 3 - header) as usize)
+    }
+
+    // spec: stage-handover.budget/unknown-window-holds-100000
+    #[test]
+    fn a_model_with_no_known_window_takes_a_context_of_up_to_100000_tokens() {
+        let records = records_of(99_000);
+        let unknown = HandoffBudget { destination_context_tokens: None, reserved_tokens: HANDOFF_RESERVED_TOKENS };
+        let prepared = prepare_context_handoff(&records, "Continue", &[], &HistoryCoverage::default(), None, unknown).unwrap();
+        assert_eq!(prepared.estimated_context_tokens, 99_000);
+        assert!(prepared.context.contains(&records), "the context goes whole");
+        assert!(!prepared.destination_window_known);
+    }
+
+    // spec: stage-handover.budget/unknown-window-refuses-beyond
+    #[test]
+    fn a_context_beyond_100000_tokens_does_not_fit_a_model_with_no_known_window() {
+        let records = records_of(100_001);
+        let unknown = HandoffBudget { destination_context_tokens: None, reserved_tokens: HANDOFF_RESERVED_TOKENS };
+        assert_eq!(prepare_context_handoff(&records, "Continue", &[], &HistoryCoverage::default(), None, unknown),
+            Err(HandoffError::CriticalContextTooLarge { needed: 100_001, available: 100_000 }));
+    }
 
     fn parts(plan: &str, message: &str) -> RefreshParts {
         RefreshParts { worktree: "/work/tree".into(), branch: Some("feature".into()), pull_requests: vec!["https://github.com/o/r/pull/1".into()], plan: Some(plan.into()), plan_file: Some("/files/plan.md".into()), last_assistant_message: Some(message.into()), records_file: "/files/records.md".into(), conversation_file: "/files/conversation.md".into() }
