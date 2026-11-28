@@ -119,6 +119,7 @@ impl Default for World {
             repository: Self::default_repository(),
             accounts: Self::default_accounts(),
             release: alondra_engine_sdk::sdk_owner::backend::this_release(),
+            context_window: None,
         }
     }
 }

@@ -166,8 +166,6 @@ pub const AUTHOR_MISSION: &str = "## Your stage
 
 This task goes in stages, and you are its author. Plan it through plan mode: ask the user every decision first, then present the plan with its checklist. Do not build it. When the project has specs (an alondra.toml at the root of the repository that turns them on), load the spec-design skill first and send the plan's specs with propose_specs before presenting the plan. Once the user approves the plan, Alondra hands the task to a new agent that implements it in this same worktree: end your turn then, without changing anything else. You never register or deliver a pull request.";
 
-pub use crate::stage_packet::{spec_packet, stage_packet, validation_packet};
-
 /// Who wrote the text a node starts with: a decision the orchestrator attributes to the user in a
 /// mission is its account of it, while a schedule's text is the user's own.
 #[derive(Clone, Copy, PartialEq, Eq)]
