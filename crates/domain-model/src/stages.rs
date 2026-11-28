@@ -42,6 +42,19 @@ pub fn stage_input(role: ExecutionRole) -> String {
     format!("Carry on with this Alondra task as its {}, from the context above.", role.as_str())
 }
 
+/// What the agent of a task without stages is told when it starts in a project with specs: it
+/// may change specs, and the user approves them on its plan before it validates its work itself.
+pub const SPECS_WITHOUT_STAGES: &str = "## Specs in this project
+
+This project keeps specs (its alondra.toml turns them on), and this task goes without stages: you plan, build and check it yourself. A spec, boundary or decision changes only with the user's approval: write the files, send them with propose_specs and present a plan through plan mode; approving the plan approves those exact files, and you go on in this same task. Without that approval a delivery that changes them is refused with specs_differ. Once specs are approved, validate your work against them yourself before delivering: commit, call ready_for_validation, run and judge what it lists and record each result with record_validation, commit only the ledger and deliver. A change the approved specs need goes through request_spec_change.";
+
+/// The first input of a task without stages, from its mission and the bytes of its project's
+/// alondra.toml: the mission alone, unless those settings turn specs on.
+pub fn unstaged_mission(mission: &str, settings: Option<&[u8]>) -> String {
+    let specs = crate::specs::engine::read_settings(settings).is_ok_and(|settings| settings.specs.enabled);
+    if specs { format!("{mission}\n\n{SPECS_WITHOUT_STAGES}") } else { mission.to_owned() }
+}
+
 /// Every agent tool whose use depends on the role of the execution that calls it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RoleTool {

@@ -1,13 +1,14 @@
 ---
 name: spec-design
-description: How the author of a task designs its specs with the user in a project with specs (an alondra.toml that turns them on) — interview in rounds, find the gaps, turn the answers into Gherkin scenarios, a boundary, decisions and a reference section, and send them with the plan. Use it before presenting the plan of a task in stages whose repository has specs.
+description: How the author of a task, or the agent of a task without stages, designs its specs with the user in a project with specs (an alondra.toml that turns them on) — interview in rounds, find the gaps, turn the answers into Gherkin scenarios, a boundary, decisions and a reference section, and send them with the plan. Use it before presenting a plan that changes specs in a repository that has them.
 ---
 
 # Designing the specs of a plan
 
-You are the author of a task in stages, in a repository whose `alondra.toml` turns specs on. The
-specs you send with your plan are what the user approves as the truth: once approved, Alondra
-writes them into the worktree, a new agent implements against them, and nothing changes them
+You are the author of a task in stages, or the agent of a task without stages, in a repository
+whose `alondra.toml` turns specs on. The specs you send with your plan are what the user approves
+as the truth: once approved, Alondra writes them into the worktree, the work is built against them
+(by a new agent in a task in stages, by you in a task without them), and nothing changes them
 without the user's approval. Code is regenerated from specs, never the other way round, so a
 behaviour no scenario states is a behaviour nobody promised.
 
@@ -154,7 +155,12 @@ The prose you explained the spec with.
    and approves the exact set. Comments come back to you as the request for changes: propose the
    specs again, then present the plan again.
 
-Once approved you end your turn. If the implementer later asks for a change
-(`request_spec_change`), a new author starts from that request: draft it with
+Once approved, the author of a task in stages ends its turn. If the implementer later asks for a
+change (`request_spec_change`), a new author starts from that request: draft it with
 `propose_amendment` (the whole new text of each file), or `ask` the user first when it needs a
 decision. The user decides on its card while the implementer carries on.
+
+In a task without stages the plan carries the specs the same way, and you go on in the same task
+once the user approves it: commit the files Alondra writes into your worktree exactly as they are,
+build the plan and validate it yourself with the `spec-validation` skill. A change you need later
+goes through `request_spec_change`, and you draft it yourself with `propose_amendment`.

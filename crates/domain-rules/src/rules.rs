@@ -14,6 +14,7 @@ mod account_settings;
 mod claude_access;
 #[path = "compaction.rs"]
 mod compaction;
+mod continuation_rules;
 #[path = "decisions.rs"]
 mod decisions;
 mod effect;
@@ -34,7 +35,7 @@ mod validation_rules;
 mod stage_rules;
 mod stall;
 
-pub(crate) use self::{account_login::*, account_settings::*, claude_access::*, compaction::*, decisions::*, effect::*, mcp::*, mcp_wait::*, node_machine::*, open_pr::*, plan_review::*, pr_identity::*, scheduled_launch::*, snooze::*, spec_rules::*, stage_rules::*, stall::*, validation_rules::*};
+pub(crate) use self::{account_login::*, account_settings::*, claude_access::*, compaction::*, continuation_rules::*, decisions::*, effect::*, mcp::*, mcp_wait::*, node_machine::*, open_pr::*, plan_review::*, pr_identity::*, scheduled_launch::*, snooze::*, spec_rules::*, stage_rules::*, stall::*, validation_rules::*};
 
 type Result<T, E = DomainError> = std::result::Result<T, E>;
 
@@ -1056,7 +1057,7 @@ pub(crate) fn withdraw_deliveries_behind_their_targets(domain: &mut DomainState,
             }
             targets.iter().find_map(|target| match target {
                 DeliveryTarget::PullRequest { pr_id, head } => domain.pull_requests.get(pr_id).filter(|pr| pr.state != PrState::Closed).and_then(|pr| {
-                    let rebased = t.stages.staged && t.validation.reading_of(head, false).is_some_and(|reading| reading.pr_base.as_deref() != Some(pr.base.as_str()));
+                    let rebased = t.gated() && t.validation.reading_of(head, false).is_some_and(|reading| reading.pr_base.as_deref() != Some(pr.base.as_str()));
                     if pr.head != *head { Some(delivery_withdrawn_behind_pr(pr.number)) } else { rebased.then(|| delivery_withdrawn_base_moved(pr.number, &pr.base)) }
                 }),
                 DeliveryTarget::DocumentRevision { document_id, revision_id } => domain.documents.get(document_id)
@@ -2062,15 +2063,7 @@ pub(crate) fn apply(
                     "this Request already has Tasks from an earlier batch: fold what is new into the Task that covers it (send it to that Task's node), or create a new Request for separate work");
             }
             if let Some(original) = continues {
-                let carried = domain.task(original)?;
-                if carried.request_id != *request_id {
-                    return refuse("continuation_request", "request_id", &format!(
-                        "a task that carries on another goes in that task's request, so the request still counts its work: create it under request {}",
-                        carried.request_id.0));
-                }
-                if plan_items.is_some() {
-                    return refuse("invalid_input", "plan_items", "a task that carries on another takes that task's whole plan: leave plan_items out");
-                }
+                continuation_refusal(domain, original, request_id, plan_items.is_some())?;
             }
             if agent_id
                 .as_ref()
@@ -2110,13 +2103,7 @@ pub(crate) fn apply(
             );
             domain.dependency_graph()?;
             if let Some(original) = continues {
-                let inherited: BTreeMap<String, TaskWorktree> = domain.tasks[original].open_worktrees()
-                    .map(|(path, worktree)| (path.clone(), TaskWorktree { origin: WorktreeOrigin::Inherited, branch: worktree.branch.clone(), discard: false, end: None }))
-                    .collect();
-                domain.tasks.get_mut(task_id).unwrap().worktrees = inherited;
-                if let Some(checklist) = domain.checklists.remove(original) {
-                    domain.checklists.insert(task_id.clone(), checklist);
-                }
+                take_over(domain, task_id, original);
             } else if let Some(taken) = plan_items {
                 take_plan_items(domain, task_id, request_id, taken)?;
             } else if let Some(approved) = domain.request_plans.get(request_id) {
@@ -2135,6 +2122,7 @@ pub(crate) fn apply(
             created.push(task_id.0.clone());
         }
         Command::AssignTask { task_id, agent_id, model } => {
+            domain.not_continued(task_id)?;
             not_held_for_plan_review(domain, task_id)?;
             domain.not_ending(task_id)?;
             if matches!(actor, Actor::System) {
@@ -2386,6 +2374,7 @@ pub(crate) fn apply(
             }
         }
         Command::StartTask { task_id } => {
+            domain.not_continued(task_id)?;
             task_editor(domain, actor, task_id)?;
             domain.not_ending(task_id)?;
             let t = domain.task(task_id)?;
@@ -3085,7 +3074,7 @@ pub(crate) fn apply(
                 );
             }
             id(&pr_id.0)?;
-            if let Some(task) = domain.tasks.get(task_id).filter(|task| task.stages.staged) {
+            if let Some(task) = domain.tasks.get(task_id).filter(|task| task.gated()) {
                 let expected = domain.expected_bases(task);
                 if !expected.is_empty() && !expected.contains(base) {
                     return refuse("pr_base_unexpected", "base", &format!(
@@ -3141,17 +3130,9 @@ pub(crate) fn apply(
                         return fail("pr_owned_by_other_task", "PR is already registered by a live task");
                     }
                     let review = p.review.clone();
-                    let old_id = p.task_id.clone();
                     let existing = p.id.clone();
                     let taken = existing.clone();
-                    domain.invalidate(&old_id);
-                    let owners = domain.pr_task_history.entry(existing.clone()).or_default();
-                    owners.insert(old_id.clone());
-                    owners.insert(task_id.clone());
-                    let old = domain.tasks.get_mut(&old_id).unwrap();
-                    if old.pr_id.as_ref() == Some(&existing) { old.pr_id = old.later_prs.pop(); }
-                    old.later_prs.retain(|id| id != &existing);
-                    old.open_pr = None;
+                    domain.release_pr(&existing, task_id);
                     let mut adopted = PullRequest::registered(existing.clone(), task_id.clone(), host.clone(), repository.clone(),
                         *number, sha.clone(), base.clone(), PrState::Open, None, allowed_methods.clone());
                     let earlier = &domain.pull_requests[&existing];
@@ -3327,9 +3308,9 @@ pub(crate) fn apply(
             if let Some(opened) = task.opened_prs.first() {
                 return refuse("pr_being_read", "targets", &opened_pr_unread(opened));
             }
-            let validation = is_final.then(|| (domain.delivery_check(task_id, targets), task.stages.role()));
-            if let Some((check, role)) = validation.as_ref().filter(|(check, _)| !check.of_round())
-                && let Some(refusal) = check.refusal(*role) {
+            let validation = is_final.then(|| (domain.delivery_check(task_id, targets), Deliverer::of(task)));
+            if let Some((check, who)) = validation.as_ref().filter(|(check, _)| !check.of_round())
+                && let Some(refusal) = check.refusal_to(*who) {
                 return Err(refusal);
             }
             if !*is_final && let Some(pr) = domain.open_prs(task).next() {
@@ -3349,7 +3330,7 @@ pub(crate) fn apply(
                 return refuse("pr_missing", "targets", &prs_missing_from_delivery(&missing));
             }
             checklist_marks_cover_the_plan(domain, task_id, *is_final, checklist, attachments, targets)?;
-            if let Some(refusal) = validation.and_then(|(check, role)| check.refusal(role)) {
+            if let Some(refusal) = validation.and_then(|(check, who)| check.refusal_to(who)) {
                 return Err(refusal);
             }
             if let Some(plan) = &card.plan {
@@ -3442,6 +3423,9 @@ pub(crate) fn apply(
             instruction,
             merge_failure,
         } => {
+            if let Some(Scope::Task { task_id }) = domain.interactions.get(presentation_id).map(|i| &i.scope) {
+                domain.not_continued(task_id)?;
+            }
             let (u, task) = domain.feedback_guard(actor, presentation_id, targets, body, attachments, *instruction, merge_failure.as_ref())?;
             if let Some(build) = approved_plan_build(domain, presentation_id) {
                 feedback_on_approved_plan(domain, actor, presentation_id, build, body, *instruction, effects, created, lifecycles)?;
@@ -3631,7 +3615,7 @@ pub(crate) fn apply(
             let newly_merged = p.state != PrState::Merged && *state == PrState::Merged;
             let newly_closed = p.state == PrState::Open && *state == PrState::Closed;
             let number = p.number;
-            let staged = domain.tasks.get(&task).is_some_and(|task| task.stages.staged);
+            let staged = domain.tasks.get(&task).is_some_and(Task::gated);
             if p.head != *sha || (staged && p.base != *base) {
                 domain.invalidate(&task);
             }
@@ -3776,6 +3760,7 @@ pub(crate) fn apply(
             system(actor)?;
             nonempty(branch)?;
             if domain.branch_has_live_task(branch) { return Ok(()); }
+            domain.not_continued(task_id)?;
             if !domain.task(task_id)?.state.terminal() {
                 return fail("task_not_active", "Only a closed task's PR can be adopted");
             }
@@ -3811,6 +3796,7 @@ pub(crate) fn apply(
             settle_open_pr(domain, actor, task_id, status, Some(pr_id), effects, created, lifecycles)?;
         }
         Command::ReopenTask { task_id } => {
+            domain.not_continued(task_id)?;
             domain.reopen_guard(actor, task_id)?;
             domain.invalidate(task_id);
             let t = domain.tasks.get_mut(task_id).unwrap();
@@ -3950,6 +3936,7 @@ pub(crate) fn apply(
                 return fail("not_found", "Agent missing");
             }
             if domain.task(task_id)?.agent_id.as_ref() != Some(agent_id) {
+                domain.not_continued(task_id)?;
                 used_by_other(domain, agent_id, task_id)?;
                 free(domain, agent_id, task_id)?;
             }

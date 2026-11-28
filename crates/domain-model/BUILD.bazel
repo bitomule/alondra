@@ -89,12 +89,15 @@ filegroup(
     name = "scanned_sources",
     srcs = [
         "src/checklist.rs",
+        "src/delivery_validation.rs",
         "src/checks.rs",
+        "src/checks/open_pr.rs",
         "src/checks/plan_review.rs",
         "src/checks/pr_identity.rs",
         "src/checks/spec_rules.rs",
         "src/pr_identity.rs",
         "src/stage_rules.rs",
+        "src/stages.rs",
     ],
     visibility = ["//crates/domain-rules:__pkg__"],
 )

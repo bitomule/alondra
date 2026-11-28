@@ -609,9 +609,9 @@ impl Context<'_> {
                 let request = self.new_request(index, text).await?;
                 self.command(index, orchestrator(), Command::TitleRequest { request_id: request.clone().into(), title: title.clone() })?;
                 self.request = Some(request);
-                self.create_task(index, task, title, None, &[])?;
+                self.create_task(index, task, title, None, &[], None)?;
             }
-            Step::Task { id, title, stack_on, after } => {
+            Step::Task { id, title, stack_on, after, continues } => {
                 self.command(index, Actor::System, Command::RegisterAgent { agent_id: agent_of(id).into(), name: id.clone(), at: 0 })?;
                 let stack = match stack_on {
                     Some(on) => Some(StackDependency {
@@ -622,7 +622,17 @@ impl Context<'_> {
                     }),
                     None => None,
                 };
-                self.create_task(index, id, title, stack, after)?;
+                self.create_task(index, id, title, stack, after, continues.as_deref())?;
+            }
+            Step::OrchestratorCancel { task } => {
+                self.command(index, orchestrator(), Command::CancelTask { task_id: task.clone().into(), reason: None })?;
+                self.settle().await?;
+            }
+            Step::OrchestratorAssign { task, refused } => {
+                let agent = format!("{}-again", agent_of(task));
+                self.command(index, Actor::System, Command::RegisterAgent { agent_id: agent.clone().into(), name: agent.clone(), at: 0 })?;
+                self.refusable(index, orchestrator(), refused.as_deref(), Command::AssignTask { task_id: task.clone().into(), agent_id: agent.into(), model: None })?;
+                self.settle().await?;
             }
             Step::RegisterPr { task, number, repository } => {
                 let head = self.head(index, *number)?;
@@ -1025,7 +1035,7 @@ impl Context<'_> {
         Ok(())
     }
 
-    fn create_task(&mut self, index: usize, task: &str, title: &str, stack: Option<StackDependency>, after: &[String]) -> Result<(), ScenarioError> {
+    fn create_task(&mut self, index: usize, task: &str, title: &str, stack: Option<StackDependency>, after: &[String], continues: Option<&str>) -> Result<(), ScenarioError> {
         let request = self.request.clone().ok_or_else(|| Self::failed(index, "a task needs a request before it"))?;
         self.command(index, Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(),
             task_id: task.to_owned().into(),
@@ -1037,7 +1047,7 @@ impl Context<'_> {
             stack,
             launch: Some(LaunchPlan { stages: self.staged(task).then(|| StageChoice { staged: true, reason: STAGED.into() }), ..LaunchPlan::new("node", "/work") }),
             plan_items: None,
-            continues: None,
+            continues: continues.map(|original| original.to_owned().into()),
         })
     }
 
@@ -1794,6 +1804,13 @@ impl Context<'_> {
                 let actual = std::fs::read_to_string(top.join(path)).ok();
                 if actual != *text {
                     return Err(failed(format!("{path} of {task}: {text:?}"), format!("{actual:?}")));
+                }
+            }
+            Expect::PrOwner { pr, task } => {
+                let domain_state = self.daemon().domain.state().map_err(|e| ScenarioError::Invalid(e.to_string()))?;
+                let actual = domain_state.pull_requests.get(&self.pr_id(*pr)).map(|pr| pr.task_id.0.clone());
+                if actual.as_deref() != Some(task.as_str()) {
+                    return Err(failed(format!("pull request {pr} belongs to {task}"), format!("{actual:?}")));
                 }
             }
             Expect::TaskState { task, state } => {

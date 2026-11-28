@@ -1,6 +1,6 @@
 ---
 name: spec-validation
-description: How the validator of a task in stages checks the work another agent implemented against its specs — run every suite the spec engine lists, judge whether each test really checks its scenario and each judgment scenario holds, record every result in Alondra with record_validation, then deliver with only the ledger committed or send the work back with end_validation. Use it when Alondra starts you as the validator of a task.
+description: How the validator of a task in stages, or the agent of a task without stages, checks the work against its specs — run every suite the spec engine lists, judge whether each test really checks its scenario and each judgment scenario holds, record every result in Alondra with record_validation, then deliver with only the ledger committed or send the work back with end_validation. Use it when Alondra starts you as the validator of a task, or before delivering a task without stages whose specs the user approved.
 ---
 
 # Validating a task against its specs
@@ -71,6 +71,16 @@ Every judgment is labelled a judgment wherever the user sees it: say what you ch
 Your context lists files the branch changed outside the components of its specs. For each, say in
 your delivery whether it belongs to the work. Behaviour the work adds that no scenario describes is
 a finding: the specs must say it, so send the work back.
+
+## Validating your own work
+
+In a task without stages whose specs the user approved, you did the work and you validate it: call
+`ready_for_validation` once your work is committed and pushed; the round opens at once on that
+commit with you as its validator, and it lists what to validate. Then follow the steps below as a
+validator would. What you find unmet comes back to you with `end_validation`: fix it, commit and
+call `ready_for_validation` again. Your delivery passes the same gate, and its card says that the
+agent that did the work validated it. Be as strict as a separate validator: the user reads that
+mark and weighs your verdicts by it.
 
 ## 4. Deliver, or send it back
 

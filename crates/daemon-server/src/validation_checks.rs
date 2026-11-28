@@ -138,7 +138,7 @@ pub(crate) fn delivered(domain: &dyn Runtime, state: &DomainState, task_id: &Tas
 }
 
 pub(crate) fn delivered_with(port: &dyn SpecWorktrees, images: &dyn KeptImages, state: &DomainState, task_id: &TaskId, delivery: &InteractionId) -> Option<DeliveredValidation> {
-    let task = state.tasks.get(task_id).filter(|task| task.stages.role() == Some(ExecutionRole::Validator))?;
+    let task = state.tasks.get(task_id).filter(|task| task.stages.role() == Some(ExecutionRole::Validator) || task.validates_itself())?;
     let root = port.own(state, task_id)?;
     let head = match state.open_prs(task).next() {
         Some(pr) => pr.head.clone(),

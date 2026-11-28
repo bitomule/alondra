@@ -134,9 +134,14 @@ pub enum Step {
     /// The user asks for something from the app's new request screen, and the orchestrator makes
     /// the first task of it.
     Request { text: String, task: String, title: String },
-    /// A further task of the request, optionally stacked on a pull request of an earlier one, or
-    /// waiting for the earlier tasks of `after`.
-    Task { id: String, title: String, #[serde(default)] stack_on: Option<StackOn>, #[serde(default)] after: Vec<String> },
+    /// A further task of the request, optionally stacked on a pull request of an earlier one,
+    /// waiting for the earlier tasks of `after`, or carrying on the task `continues` names.
+    Task { id: String, title: String, #[serde(default)] stack_on: Option<StackOn>, #[serde(default)] after: Vec<String>, #[serde(default)] continues: Option<String> },
+    /// The orchestrator cancels `task`, as `cancel_task` does.
+    OrchestratorCancel { task: String },
+    /// The orchestrator gives `task` a node of its own again, as a launch does. With `refused`, the
+    /// daemon must turn it down with that code.
+    OrchestratorAssign { task: String, #[serde(default)] refused: Option<String> },
     /// The node of `task` registers a pull request it opened, by the scenario's repository or by
     /// `repository` when it names it at another address.
     RegisterPr { task: String, number: u64, #[serde(default)] repository: Option<String> },
@@ -347,6 +352,8 @@ pub enum Expect {
     /// The searches of open PRs and reads of their branches the daemon made, in order.
     SweepReads { reads: Vec<String> },
     TaskState { task: String, state: alondra_domain_model::TaskState },
+    /// Pull request `pr` of the scenario's repository belongs to `task`.
+    PrOwner { pr: u64, task: String },
     /// Each start-problem decision pass reads at most this many times the card population.
     StartProblemReads { max_passes: u64 },
     /// Building the committed read index scans card history at most this many times.

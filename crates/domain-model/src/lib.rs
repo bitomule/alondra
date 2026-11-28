@@ -48,7 +48,7 @@ mod spec_parts;
 pub mod spec_card;
 pub mod validation;
 pub mod delivery_validation;
-pub use delivery_validation::{CommitReading, DeliveryCheck, LedgerEntry, SpecFileChange};
+pub use delivery_validation::{specs_differ_text, CommitReading, DeliveryCheck, Deliverer, LedgerEntry, SpecFileChange};
 mod system_card;
 pub use attention::*;
 pub use specs::{KeptImages, NoImages, SpecContent, StoredImage, AmendmentState, ApprovedSpecs, DecisionAnswer, DecisionFields, DecisionVerdict, ProposedDecision, SpecAmendment, SpecCheck, SpecDirs, SpecDraft, SpecFile, SpecFileKind, SpecFiles, SpecLevel, SpecMode, SpecProblem, TaskSpecs};
