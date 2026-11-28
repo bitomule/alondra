@@ -582,6 +582,7 @@ async fn handed_over_nth(slice: &Slice, nth: usize) {
 }
 
 // spec: stage-handover.packet/large-task-hands-over
+// spec: stage-handover.packet/uncommitted-specs-in-task-folder
 #[tokio::test]
 async fn a_task_whose_plan_and_specs_outgrew_the_old_packet_hands_over_to_its_implementer() {
     let slice = Slice::new();
@@ -596,7 +597,7 @@ async fn a_task_whose_plan_and_specs_outgrew_the_old_packet_hands_over_to_its_im
     let specs = large_specs();
     assert_eq!((plan.len() / 1000, specs.iter().map(|file| file.text.as_ref().unwrap().len()).sum::<usize>()), (120, 90_000), "the size of the live task");
     let mut driver = slice.launch_with(&format!("decide:plan {plan}"));
-    slice.run(&Actor::Agent { agent_id: driver.agent().clone() }, "specs", Command::ProposeSpecs { task_id: task.clone(), level: SpecLevel::Full, files: specs,
+    slice.run(&Actor::Agent { agent_id: driver.agent().clone() }, "specs", Command::ProposeSpecs { task_id: task.clone(), level: SpecLevel::Full, files: specs.clone(),
         check: alondra_domain_model::SpecCheck { mode: SpecMode::Uncommitted, ..Default::default() } });
     slice.until(&mut driver, |slice| !Slice::open_decision_cards(&slice.domain).is_empty());
     let card = Slice::open_decision_cards(&slice.domain).remove(0);
@@ -632,6 +633,13 @@ async fn a_task_whose_plan_and_specs_outgrew_the_old_packet_hands_over_to_its_im
         assert!(prompt.contains(&items[at].subject) && prompt.contains(&reasoning(at)), "unmet validation {at} reaches the implementer whole: {}", prompt.chars().take(4000).collect::<String>());
     }
     assert!(prompt.len() < 60_000, "the packet no longer holds the plan or the specs: {} bytes", prompt.len());
+    for spec in &specs {
+        let kept = task_file(&slice, &format!("specs/{}", spec.path));
+        assert_eq!(std::fs::read(&kept).unwrap_or_else(|error| panic!("{} was not written: {error}", kept.display())), spec.text.as_ref().unwrap().as_bytes(),
+            "the task's folder holds {} exactly", spec.path);
+        assert!(prompt.contains(&kept.display().to_string()), "the packet names {}", kept.display());
+    }
+    assert!(prompt.contains("do not commit them"), "the packet says not to commit the specs kept out of the repository");
     slice.domain.stop_sdk_owners();
 }
 
