@@ -256,7 +256,7 @@ fn memory_swinging_for_an_hour_puts_no_card_in_front_of_the_user_and_admits_only
 /// The last sample at 9 % is 10 s before the swing up, so the minute after it ends 50 s in.
 const ROOM_SINCE_SWING: Millis = 50_000;
 
-struct Home(crate::test_support::Directory);
+pub(super) struct Home(crate::test_support::Directory);
 impl Drop for Home {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
@@ -308,13 +308,13 @@ fn a_queue_pause_an_older_daemon_kept_in_the_gates_file_becomes_the_domains() {
 }
 
 /// The orchestrator's launch of `id` waits in the gate's queue, as the engine keeps it.
-fn enqueue(domain: &DomainRuntime, id: &str, now: Millis) {
+pub(super) fn enqueue(domain: &DomainRuntime, id: &str, now: Millis) {
     let body: LaunchBody = serde_json::from_value(serde_json::json!({"task": id, "name": format!("app/{id}"), "cwd": "/tmp"})).unwrap();
     domain.store.lock().unwrap().enqueue_launch(body.task_id(), &body.to_queue(), "orchestrator", now).unwrap();
     domain.admission().poke();
 }
 
-fn world() -> (Home, Arc<DomainRuntime>) {
+pub(super) fn world() -> (Home, Arc<DomainRuntime>) {
     let world = unmeasured_world();
     healthy(&world.1);
     world
@@ -335,7 +335,7 @@ fn unmeasured_world() -> (Home, Arc<DomainRuntime>) {
     (Home(home), domain)
 }
 
-fn run(domain: &DomainRuntime, actor: Actor, command: Command) {
+pub(super) fn run(domain: &DomainRuntime, actor: Actor, command: Command) {
     let state = domain.state().unwrap();
     domain.execute(&actor, &CommandEnvelope {
         protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: alondra_foundation::random_hex(8).into(),
@@ -352,7 +352,7 @@ fn create(domain: &DomainRuntime, id: &str) {
 }
 
 /// The admitted task's node starts through the Agent SDK and takes its first turn.
-fn start(domain: &DomainRuntime, id: &str, now: Millis) {
+pub(super) fn start(domain: &DomainRuntime, id: &str, now: Millis) {
     let agent = format!("agent-{id}");
     run(domain, Actor::System, Command::RegisterAgent { agent_id: AgentId(agent.clone()), name: agent.clone(), at: 0 });
     crate::domain_store::admit_through_sdk(domain, &id.into(), &agent);
@@ -549,15 +549,15 @@ fn the_log_says_why_the_queue_waits_and_repeats_it_only_when_its_cause_changes_o
     let working: Vec<TaskId> = vec!["t-a".into(), "t-b".into()];
     let on_user: Vec<TaskId> = vec!["t-c".into()];
     let slots = Hold::Slots { working: 3, limit: 3 };
-    assert_eq!(hold_line(4, "t-x", TaskPriority::High, &slots, &working, &on_user, 0).unwrap(),
+    assert_eq!(hold_line(&DomainState::new("test"), 4, "t-x", TaskPriority::High, &slots, &working, &on_user, 0).unwrap(),
         "the admission gate holds 4 waiting (next t-x, High): 3 of 3 working (t-a, t-b, 1 starting); waiting on the user, not counted: t-c");
     let short = Hold::Memory { why: NoRoom::Free { free: 22, needed: 27, floor: 20, nodes: 3, cost: 410_000_000 }, free: Some(22) };
-    assert_eq!(hold_line(1, "t-x", TaskPriority::Low, &short, &[], &[], 2).unwrap(),
+    assert_eq!(hold_line(&DomainState::new("test"), 1, "t-x", TaskPriority::Low, &short, &[], &[], 2).unwrap(),
         "the admission gate holds 1 waiting (next t-x, Low): memory has no room for one more node: 22% free, 27% needed to keep 20% free with 3 node(s) at 0.38 GiB each (22% free); 2 node(s) paused");
     let swapping = Hold::Memory { why: NoRoom::Swapping { swapped: 300 << 20, free: 31, needed: 33 }, free: Some(31) };
-    assert_eq!(hold_line(1, "t-x", TaskPriority::Low, &swapping, &[], &[], 0).unwrap(),
+    assert_eq!(hold_line(&DomainState::new("test"), 1, "t-x", TaskPriority::Low, &swapping, &[], &[], 0).unwrap(),
         "the admission gate holds 1 waiting (next t-x, Low): memory has no room for one more node: macOS swapped out 300 MiB in the last minute with 31% free, 33% needed while it swaps (31% free)");
-    assert_eq!(hold_line(1, "t-x", TaskPriority::Normal, &Hold::Spacing { until: 5 }, &[], &[], 0), None, "the minute between starts is not news");
+    assert_eq!(hold_line(&DomainState::new("test"), 1, "t-x", TaskPriority::Normal, &Hold::Spacing { until: 5 }, &[], &[], 0), None, "the minute between starts is not news");
 
     let mut told = Told::default();
     let tight = |free| Cause::of(&Hold::Memory { why: NoRoom::Free { free, needed: 20, floor: 20, nodes: 1, cost: 1 }, free: Some(free) });
@@ -602,7 +602,7 @@ fn finish(domain: &DomainRuntime, id: &str, now: Millis) {
     crate::wiring::engine(domain).working(&format!("agent-{id}"), None);
 }
 
-fn ask(domain: &DomainRuntime, id: &str, now: Millis) -> Result<(), Hold> {
+pub(super) fn ask(domain: &DomainRuntime, id: &str, now: Millis) -> Result<(), Hold> {
     domain.admission().ask(domain, Waiting { key: Key::Task(id.into()), priority: TaskPriority::Normal, resuming: false, since: 0 }, now)
 }
 
@@ -1099,7 +1099,7 @@ fn a_resume_waits_while_the_disk_has_no_room_for_one_more_build() {
     assert!(still_paused(&domain, "t1"), "the disk is under its line");
     let queued = gate.live(&*domain, base + MIN).unwrap().queued;
     assert_eq!(queued.iter().map(|queued| (queued.task_id.as_str(), &queued.hold)).collect::<Vec<_>>(),
-        [("t1", &alondra_view_model::LiveHold::Disk { free: 4 * GB, needed: 5 * GB })], "it waits in the queue, and says why");
+        [("t1", &alondra_view_model::LiveHold::Disk { free: 4 * GB, needed: 5 * GB, holders: vec![] })], "it waits in the queue, and says why");
     assert!(gate.live(&*domain, base + MIN).unwrap().paused.is_empty(), "no longer shown as paused by the user");
 
     watch.measure_disk(alondra_engine_ports::disk::Space { free: 4 * GB, purgeable: 11 * GB, total: 500 * GB });
@@ -1143,9 +1143,9 @@ fn nodes_the_user_resumed_still_wait_for_a_slot_after_the_daemon_restarts() {
     assert_eq!(["t1", "t2", "t3"].map(|id| still_paused(&domain, id)), [false, false, true]);
 }
 
-const GB: u64 = 1_000_000_000;
+pub(super) const GB: u64 = 1_000_000_000;
 
-fn create_in(domain: &DomainRuntime, id: &str, project: &str) {
+pub(super) fn create_in(domain: &DomainRuntime, id: &str, project: &str) {
     let mut launch = alondra_domain_model::LaunchPlan::new("node", "/tmp");
     launch.project = Some(project.into());
     run(domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
@@ -1155,7 +1155,7 @@ fn create_in(domain: &DomainRuntime, id: &str, project: &str) {
 }
 
 /// A sample of the Mac at `now` whose own disk has `usable` bytes free, none of them purgeable.
-fn disk_sample(domain: &DomainRuntime, usable: u64, now: Millis) {
+pub(super) fn disk_sample(domain: &DomainRuntime, usable: u64, now: Millis) {
     crate::machine_watch::pace(domain, &Machine { at: now, memory_total: 16 << 30, memory_available: 12 << 30, memory_free_percent: Some(50), cpus: 11, load: [5.0; 3],
         disk_total: 500 * GB, disk_available: usable, ..Machine::default() });
     domain.machine_watch().measure_disk(alondra_engine_ports::disk::Space { free: usable, purgeable: 0, total: 500 * GB });
@@ -1323,15 +1323,19 @@ fn a_start_waits_while_the_nodes_at_work_may_still_take_the_disk_and_goes_once_o
         disk_sample(&domain, 20 * GB, now);
     }
     let now = base + 3 * SAMPLE;
-    assert_eq!(ask(&domain, "t3", now), Err(Hold::Disk { free: 20 * GB, needed: 6 * GB + 6 * GB + 6 * GB + 5 * GB }),
+    assert_eq!(ask(&domain, "t3", now), Err(Hold::Disk { free: 20 * GB, needed: 6 * GB + 6 * GB + 6 * GB + 5 * GB, holders: holders(&[("t1", 6 * GB), ("t2", 6 * GB)]) }),
         "t1 and t2 may still take 6 GB each");
     disk_sample(&domain, 17 * GB, now + SAMPLE);
-    assert_eq!(ask(&domain, "t3", now + SAMPLE), Err(Hold::Disk { free: 17 * GB, needed: 4_500_000_000 * 2 + 6 * GB + 5 * GB }),
+    assert_eq!(ask(&domain, "t3", now + SAMPLE), Err(Hold::Disk { free: 17 * GB, needed: 4_500_000_000 * 2 + 6 * GB + 5 * GB, holders: holders(&[("t1", 4_500_000_000), ("t2", 4_500_000_000)]) }),
         "what they took is no longer free, nor reserved");
     finish(&domain, "t1", now + 2 * SAMPLE);
     disk_sample(&domain, 20 * GB, now + 2 * SAMPLE);
     assert_eq!(ask(&domain, "t3", now + 2 * SAMPLE), Ok(()), "t1 ended and its build was deleted: what it reserved is free again");
     assert_eq!(machine_cards(&domain), 0, "waiting for the disk asks the user nothing");
+}
+
+fn holders(tasks: &[(&str, u64)]) -> Vec<alondra_engine_ports::admission::DiskHolder> {
+    tasks.iter().map(|(task, bytes)| alondra_engine_ports::admission::DiskHolder { key: Key::Task((*task).into()), bytes: *bytes }).collect()
 }
 
 /// A node the disk paused goes back before a new task of any priority; one the memory paused keeps
@@ -1369,7 +1373,7 @@ fn a_node_the_disks_floor_held_still_waits_after_a_restart_and_goes_on_once_ther
     assert!(still_paused(&domain, "t1"), "4 GB are under the 5 GB line");
     let pacing = gate.live(&domain, now).unwrap();
     assert_eq!(pacing.queued.iter().map(|queued| (queued.task_id.as_str(), &queued.hold)).collect::<Vec<_>>(),
-        [("t1", &alondra_view_model::LiveHold::Disk { free: 4 * GB, needed: 5 * GB })], "it waits in the queue for the disk");
+        [("t1", &alondra_view_model::LiveHold::Disk { free: 4 * GB, needed: 5 * GB, holders: vec![] })], "it waits in the queue for the disk");
     assert!(pacing.paused.is_empty(), "not shown as paused");
 
     disk_sample(&domain, 16 * GB, now + SAMPLE);
@@ -1583,7 +1587,7 @@ fn the_gate_names_as_many_tasks_as_it_counts() {
     assert_eq!(snapshot.working_tasks.len(), snapshot.working, "{:?}", snapshot.working_tasks);
     let state = domain.state().unwrap();
     let working: Vec<TaskId> = snapshot.working_tasks.iter().cloned().collect();
-    let line = hold_line(1, "t4", TaskPriority::Normal, &Hold::Slots { working: snapshot.working, limit: 3 }, &working, &[], 0).unwrap();
+    let line = hold_line(&DomainState::new("test"), 1, "t4", TaskPriority::Normal, &Hold::Slots { working: snapshot.working, limit: 3 }, &working, &[], 0).unwrap();
     assert!(line.contains("3 of 3 working (t1, t2, t3)") && !line.contains("starting"), "{line}");
     assert_eq!(super::working_tasks(&*domain, &state).len(), domain.read().index().slots().len());
 }

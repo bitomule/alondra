@@ -1,0 +1,135 @@
+name = "a node coming back waits for the disk while three others reserve it, says which, and goes once the user cancels the one admitted again and again"
+max_virtual = "1h"
+
+[[step]]
+do = "request"
+text = "Write the release notes"
+task = "t1"
+title = "Write the release notes"
+
+[[step]]
+do = "task"
+id = "t2"
+title = "Add the changelog"
+
+[[step]]
+do = "task"
+id = "t3"
+title = "Translate the guide"
+
+[[step]]
+do = "task"
+id = "t4"
+title = "Cancel the stale task"
+
+# The disk has 19.5 GB usable and the builds measured took 4 GB on average: three nodes at work
+# and a fourth coming back need 4 GB each on top of the 5 GB line, 21 GB. Once one of the three is
+# cancelled, the fourth needs 17 GB, which fits with the margin the disk needs once it was short.
+[[step]]
+do = "disk"
+usable = 19.5
+free = 19.5
+project = "app"
+peaks = [2.0, 5.0, 5.0]
+
+[[step]]
+do = "node"
+task = "t1"
+
+[[step]]
+do = "node"
+task = "t2"
+
+[[step]]
+do = "node"
+task = "t3"
+
+[[step]]
+do = "node"
+task = "t4"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "press_task"
+task = "t4"
+action = "pause"
+
+# The node of t3 comes back through the gate twice, as a task that keeps handing over does.
+[[step]]
+do = "press_task"
+task = "t3"
+action = "pause"
+
+[[step]]
+do = "press_task"
+task = "t3"
+action = "resume"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "press_task"
+task = "t3"
+action = "pause"
+
+[[step]]
+do = "press_task"
+task = "t3"
+action = "resume"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "press_task"
+task = "t4"
+action = "resume"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "checkpoint"
+name = "waits-for-the-disk"
+screens = ["tasks", "task:t4"]
+
+[[step.expect]]
+check = "view_shows"
+screen = "task:t4"
+text = "Disk · 19.5 GB free of 21.0 GB needed · reserved by “Write the release notes” 4.0 GB, “Add the changelog” 4.0 GB and “Translate the guide” 4.0 GB"
+
+[[step.expect]]
+check = "view_shows"
+screen = "tasks"
+text = "Disk · 19.5 GB free of 21.0 GB needed · reserved by “Write the release notes” 4.0 GB, “Add the changelog” 4.0 GB and “Translate the guide” 4.0 GB"
+
+[[step]]
+do = "orchestrator_cancel"
+task = "t3"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "checkpoint"
+name = "goes-once-cancelled"
+screens = ["tasks", "task:t4"]
+
+[[step.expect]]
+check = "view_shows"
+screen = "task:t4"
+text = "Disk ·"
+present = false
+
+[[step.expect]]
+check = "task_state"
+task = "t3"
+state = "cancelled"

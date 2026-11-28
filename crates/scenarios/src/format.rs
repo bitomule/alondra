@@ -217,6 +217,10 @@ pub enum Step {
     PressTask { task: String, action: String },
     /// The user sets how many nodes work at once.
     NodeLimit { count: u32 },
+    /// The Mac's own disk has `usable` GB from now on, `free` of them free right now (the rest
+    /// macOS can purge), and the nodes of `project` took these `peaks`, in GB: the gate reserves
+    /// the disk for the nodes as on a Mac whose builds it measured.
+    Disk { usable: f64, free: f64, project: String, peaks: Vec<f64> },
     /// The user writes to the node of `task` from the task's screen of the app.
     Tell { task: String, text: String },
     /// The node of `task` reads the oldest message the user wrote to it that it has not read, in

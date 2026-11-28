@@ -2943,20 +2943,30 @@ Since `e7b898c30` only the Mac's own disk has stretches: the build-volume ledger
     (`:149-154`);
   - --(sample, task no longer in `working`)--> No stretch; the peak is saved in `Estimates` only if it was whole
     (`:137-143`);
+  - --(gate decision, task over: cancelled, done, ending or closing)--> No stretch, before the next sample
+    (`Ledger::end`, called by `Record::release` in `machine_watch.rs`); the peak is kept the same way and the
+    record is saved;
   - the split of what was lost or gained is in `share`;
   - `measure_volumes` creates the volume ledgers (`machine_watch.rs:614`) and discards them when the volume leaves
     the mount table (`:596`).
+- **Estimate** (`Estimates::estimate`): the average of a project's kept peaks, never under 1 GB; a project
+  measured fewer than three times takes the larger of its own average and the average of every peak kept by the
+  projects measured three times or more, and 8 GB while none is (decision
+  `a-node-reserves-the-average-build-of-its-project`). The stored format (the list of peaks) is unchanged.
 - **Invariants**:
-  - "what they reserve covers what they can still take" (`disk_peaks.rs:7-9`);
+  - what a node reserves is its project's average build, a minimum and not the worst case: a build larger than
+    the average is not covered, and the disk's floor (`hold_for_disk`) holds the next turns when the estimates
+    fall short;
   - "a working node carries on after a restart from what it took" (`:11-12`): only holds on the Mac disk. See
     F-ENGINE-7.
-- **Concurrency**: under the `Mutex<Record>`. Only `pace` samples (the `look` thread).
+- **Concurrency**: under the `Mutex<Record>`. `pace` samples (the `look` thread); a gate decision may end the
+  stretches of tasks that are over, under the same lock.
 
 ### M-ENGINE-14 · Disk budget and reservations of the gate (implicit, in memory)
 
 ```toml state-machine
 id = "M-ENGINE-14"
-code = ["crates/engine-admission/src/machine_watch.rs::Record", "crates/engine-admission/src/machine_watch.rs::reserve_admission", "crates/engine-admission/src/machine_watch.rs::disk_room_for"]
+code = ["crates/engine-admission/src/machine_watch.rs::Record", "crates/engine-admission/src/machine_watch.rs::reserve_admission", "crates/engine-admission/src/machine_watch.rs::disk_room_for", "crates/engine-admission/src/machine_watch.rs::disk_decision"]
 truth = ["memory"]
 ```
 
@@ -2971,15 +2981,19 @@ truth = ["memory"]
 
 | Event | What it does |
 |---|---|
-| `admit` → `reserve_admission` | adds a grant per key (`admission.rs:842-846`) |
-| `disk_room_for` | puts the snapshot's `working` (which include the `in_flight`) into `disk_working`/`volume_working` |
+| `admit` → `reserve_admission` | sets the grant of the key to one estimate: a new admission of the same task (start, resume, handover) replaces the one before instead of adding to it |
+| `disk_decision` (the gate's snapshot) | first forgets the grant, the `disk_working` entry and the stretch of every task that is over (`admission::releases_disk`: cancelled, done, ending, closing or gone), then puts the snapshot's `working` (which include the `in_flight`) into `disk_working` and returns the room, what the head needs and each reservation (`DiskHolder`), most first |
 | valid Mac disk reading (`measure_peaks`, `:636-649`) | clears `disk_working` and `disk_grants` |
 | valid reading of a volume (`measure_volumes`, `:606-608`) | clears those of that volume |
 
 - **Guards**: needed = reserved + estimate of the next one (0 if it goes alone, `alone`) + low line (5 GB). With 2 GB
   of hysteresis once short (`engine-ports/src/disk.rs:62-68`).
+- **Who holds it**: the reservations behind a `Hold::Disk` travel with it (`holders`) to `LiveHold::Disk`
+  (additive, `serde(default)`), the log line (task ids) and the orchestrator's text (every one); Tasks name the
+  three that hold most.
 - **Concurrency**: `disk_room_for` takes the lock three times (`:712-718`), and `pace` can empty `disk_working`
-  between the first and the third. See F-ENGINE-10. Since `e7b898c30` it takes it once.
+  between the first and the third. See F-ENGINE-10. Since `e7b898c30` it takes it once; `disk_decision` releases,
+  counts and decides under that one lock, so a reading cannot empty the count midway.
 
 ### M-ENGINE-15 · Lifecycle of an observed volume (implicit, composite)
 

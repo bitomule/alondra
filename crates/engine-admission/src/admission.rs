@@ -245,6 +245,10 @@ pub struct Snapshot {
     pub in_flight: usize,
     pub hold: Option<Hold>,
     pub disk: Option<alondra_engine_ports::disk::Room>,
+    /// What the next start needs on the disk: what the others reserve, its own estimate and the line.
+    pub disk_needed: u64,
+    /// What each other reservation holds of the disk, most first.
+    pub disk_holders: Vec<alondra_engine_ports::admission::DiskHolder>,
     disk_detail: Option<String>,
 }
 
@@ -580,7 +584,7 @@ impl Admission {
         let is_paused = |waiting: &Waiting| matches!(&waiting.key, Key::Resume(session) if held(session));
         let starts: Vec<&Waiting> = snapshot.queue.iter().filter(|waiting| !is_paused(waiting)).collect();
         let total = starts.len();
-        let hold = snapshot.hold.as_ref().map(live_hold);
+        let hold = snapshot.hold.as_ref().map(|hold| live_hold(&state, hold));
         let queued = starts.iter().enumerate().filter_map(|(index, waiting)| {
             let task = task_of(&state, &waiting.key)?;
             let hold = match waiting.key {
@@ -671,7 +675,7 @@ fn disk_returns_first(queue: Vec<Waiting>, pauses: &Pauses) -> Vec<Waiting> {
 /// the spacing of starts, which resumes keep too.
 fn hold_of(inner: &Inner, head: &Waiting, snapshot: &Snapshot, now: Millis) -> Result<(), Hold> {
     if let Some(room) = &snapshot.disk {
-        return Err(Hold::Disk { free: room.free, needed: room.needed });
+        return Err(Hold::Disk { free: room.free, needed: room.needed, holders: snapshot.disk_holders.clone() });
     }
     if inner.ignores_mac {
         return decide_pacing(snapshot.working, snapshot.limit, false, inner.saved.last_admission, inner.tuning.spacing, now);
@@ -972,13 +976,22 @@ fn note_at_work(domain: &dyn Runtime, inner: &mut Inner, state: &DomainState) {
     inner.at_work.extend(seen);
 }
 
-fn live_hold(hold: &Hold) -> LiveHold {
+fn live_hold(state: &DomainState, hold: &Hold) -> LiveHold {
     match hold {
         Hold::Slots { working, limit } => LiveHold::Slots { working: *working, limit: *limit },
         Hold::Memory { free, .. } => LiveHold::Memory { free: *free },
         Hold::Spacing { .. } => LiveHold::Next,
-        Hold::Disk { free, needed } => LiveHold::Disk { free: *free, needed: *needed },
+        Hold::Disk { free, needed, holders } => LiveHold::Disk { free: *free, needed: *needed, holders: holders.iter().map(|holder| {
+            let task = task_of(state, &holder.key);
+            let title = task.as_ref().and_then(|task| state.tasks.get(task)).map(|task| task.title.clone());
+            alondra_view_model::LiveDiskHolder { task_id: task.map(|task| task.0), title, bytes: holder.bytes }
+        }).collect() },
     }
+}
+
+/// «t-a 4.00 GB, scheduled run r-1 2.00 GB»: every reservation, for the log.
+fn holders_line(state: &DomainState, holders: &[alondra_engine_ports::admission::DiskHolder]) -> String {
+    holders.iter().map(|holder| format!("{} {:.2} GB", key_text(state, &holder.key), holder.bytes as f64 / 1_000_000_000.0)).collect::<Vec<_>>().join(", ")
 }
 
 fn key_text(state: &DomainState, key: &Key) -> String {
@@ -991,7 +1004,7 @@ fn key_text(state: &DomainState, key: &Key) -> String {
 }
 
 /// Why the queue does not move, worded for the log; none for the minute between two starts.
-pub(crate) fn hold_line(queued: usize, head: &str, priority: TaskPriority, hold: &Hold, working: &[TaskId], on_user: &[TaskId], paused: usize) -> Option<String> {
+pub(crate) fn hold_line(state: &DomainState, queued: usize, head: &str, priority: TaskPriority, hold: &Hold, working: &[TaskId], on_user: &[TaskId], paused: usize) -> Option<String> {
     let list = |tasks: &[TaskId]| tasks.iter().map(|task| task.0.as_str()).collect::<Vec<_>>().join(", ");
     let why = match hold {
         Hold::Spacing { .. } => return None,
@@ -1005,7 +1018,13 @@ pub(crate) fn hold_line(queued: usize, head: &str, priority: TaskPriority, hold:
             why
         }
         Hold::Memory { why, free } => format!("memory has no room for one more node: {why} ({} free)", free.map_or_else(|| "unknown".into(), |free| format!("{free}%"))),
-        Hold::Disk { free, needed } => format!("the disk has no room for one more build: {} free of {} needed", bytes_text(*free, Lang::En), bytes_text(*needed, Lang::En)),
+        Hold::Disk { free, needed, holders } => {
+            let mut why = format!("the disk has no room for one more build: {} free of {} needed", bytes_text(*free, Lang::En), bytes_text(*needed, Lang::En));
+            if !holders.is_empty() {
+                why.push_str(&format!(", reserved by {}", holders_line(state, holders)));
+            }
+            why
+        }
     };
     let paused = if paused > 0 { format!("; {paused} node(s) paused") } else { String::new() };
     Some(format!("the admission gate holds {queued} waiting (next {head}, {priority:?}): {why}{paused}"))
@@ -1254,11 +1273,16 @@ fn snapshot_locked(domain: &dyn Runtime, state: &DomainState, inner: &Inner, que
     let reserving = reserving_tasks(state, working_tasks.iter().filter(|task| Some(*task) != head.as_ref()));
     let project = head.and_then(|task| state.tasks.get(&task)).and_then(|task| task.project.as_deref());
     let reservation_head = queue.first().map(|head| task_of(state, &head.key).map(Key::Task).unwrap_or_else(|| head.key.clone()));
-    let disk = domain.machine_watch().disk_room_for(&reserving, project, reservation_head.as_ref(), now);
-    let disk_detail = domain.machine_watch().disk_detail_for(&reserving, project, reservation_head.as_ref(), now);
-    let mut snapshot = Snapshot { queue, working, working_tasks, limit, setting, limits, mac, in_flight: admitted, hold: None, disk, disk_detail };
+    let disk = domain.machine_watch().disk_decision(&reserving, project, reservation_head.as_ref(), &|task| releases_disk(state, task), now);
+    let mut snapshot = Snapshot { queue, working, working_tasks, limit, setting, limits, mac, in_flight: admitted, hold: None,
+        disk: disk.room, disk_needed: disk.needed, disk_holders: disk.holders, disk_detail: disk.detail };
     snapshot.hold = snapshot.next_start().and_then(|head| hold_of(inner, head, &snapshot, now).err());
     snapshot
+}
+
+/// A task that reserves nothing on the disk any more: cancelled, done, ending, closing or gone.
+pub(crate) fn releases_disk(state: &DomainState, task: &TaskId) -> bool {
+    state.tasks.get(task).is_none_or(|task| task.over() || task.state == TaskState::Closing)
 }
 
 /// The user pauses a task that waits in the queue to start, as a fact of the domain: its row
@@ -1364,7 +1388,18 @@ pub(crate) fn queued_text(domain: &dyn Runtime, task: &TaskId, now: Millis) -> S
         LiveHold::Memory { free: None } => "the Mac is short of memory".into(),
         LiveHold::Cpu { load, cpus } => format!("the Mac is very busy (load {load} on {cpus} cores)"),
         LiveHold::Next => "it starts within a minute".into(),
-        LiveHold::Disk { free, needed } => format!("the disk has no room for one more build ({} free of {} needed)", bytes_text(*free, Lang::En), bytes_text(*needed, Lang::En)),
+        LiveHold::Disk { free, needed, holders } => {
+            let held = holders.iter().map(|holder| match &holder.title {
+                Some(title) => format!("“{title}” {}", bytes_text(holder.bytes, Lang::En)),
+                None => format!("a scheduled run {}", bytes_text(holder.bytes, Lang::En)),
+            }).collect::<Vec<_>>();
+            let by = match held.split_last() {
+                None => String::new(),
+                Some((last, [])) => format!("; reserved by {last}"),
+                Some((last, rest)) => format!("; reserved by {} and {last}", rest.join(", ")),
+            };
+            format!("the disk has no room for one more build ({} free of {} needed{by})", bytes_text(*free, Lang::En), bytes_text(*needed, Lang::En))
+        }
     };
     format!("It waits in the queue, {} of {}: {why}. Alondra starts it by itself when its turn comes; you do not need to launch it again.",
         place.position, place.of)
@@ -1417,7 +1452,7 @@ pub async fn pass_at(domain: &dyn Runtime, home: &Path, now: Millis) -> anyhow::
             let working: Vec<TaskId> = snapshot.working_tasks.iter().cloned().collect();
             let on_user: Vec<TaskId> = state.agents.values().filter(|agent| state.node_waits_on_user(&agent.id))
                 .filter_map(|agent| state.node_task(&agent.id).map(|task| task.id.clone())).collect();
-            if let Some(line) = hold_line(snapshot.queue.len(), &key_text(&state, &head.key), head.priority, hold, &working, &on_user, inner.saved.pauses.paused.len()) {
+            if let Some(line) = hold_line(&state, snapshot.queue.len(), &key_text(&state, &head.key), head.priority, hold, &working, &on_user, inner.saved.pauses.paused.len()) {
                 let detail = snapshot.disk_detail.as_deref()
                     .map(|detail| format!("; {detail}")).unwrap_or_default();
                 log!("{line}{detail}; {}", snapshot.mac.memory_detail(snapshot.in_flight));
@@ -1493,3 +1528,6 @@ fn refused(domain: &dyn Runtime, task: &TaskId, error: &alondra_domain_model::Do
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+#[path = "disk_gate_tests.rs"]
+mod disk_gate_tests;

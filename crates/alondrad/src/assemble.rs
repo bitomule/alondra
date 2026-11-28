@@ -162,6 +162,14 @@ impl Assembled {
         service.register_phone_push(phone, binding).await
     }
 
+    /// The gate reserves the disk for the nodes from now on, and the nodes of `project` took `peaks`
+    /// at their peak: a scenario's daemon reserves nothing until it says so.
+    pub fn measure_disk_peaks(&self, project: &str, peaks: &[u64]) {
+        self.domain.machine_watch().measure_peaks_again();
+        self.domain.machine_watch().seed_peaks(project, peaks);
+        self.domain.admission().poke();
+    }
+
     /// The most nodes that work at once, fixed from now on as the user sets it in Settings.
     pub fn limit_nodes(&self, count: u32) {
         self.domain.admission().tune(admission::Tuning { spacing: 1_000, limit: Some(admission::Limit::Fixed(count)) });

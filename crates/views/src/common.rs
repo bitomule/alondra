@@ -97,21 +97,44 @@ pub(super) fn gate_queued<'a>(task: &alondra_domain_model::Task, context: &'a Re
     context.live.pacing.as_ref()?.queued.iter().find(|queued| queued.task_id == task.id.0)
 }
 
-/// The free space and what one more build needs, when the gate holds the task's start or its
-/// node's return for room on the disk: the task then reads `WaitingCapacity(Disk)`, whatever its
-/// lifecycle says.
-pub(super) fn held_for_disk(task: &alondra_domain_model::Task, context: &RenderContext<'_>) -> Option<(u64, u64)> {
+/// The free space, what one more build needs and who reserves the rest, when the gate holds the
+/// task's start or its node's return for room on the disk: the task then reads
+/// `WaitingCapacity(Disk)`, whatever its lifecycle says.
+pub(super) fn held_for_disk<'a>(task: &alondra_domain_model::Task, context: &'a RenderContext<'_>) -> Option<(u64, u64, &'a [alondra_view_model::LiveDiskHolder])> {
     match &gate_queued(task, context)?.hold {
-        super::LiveHold::Disk { free, needed } => Some((*free, *needed)),
+        super::LiveHold::Disk { free, needed, holders } => Some((*free, *needed, holders.as_slice())),
         _ => None,
     }
 }
 
-/// «Disk · 3.5 GB free of 13.0 GB needed».
-pub(super) fn disk_room_fact(free: u64, needed: u64, lang: super::Lang) -> String {
+/// «Disk · 3.5 GB free of 13.0 GB needed · reserved by “A” 4.0 GB, “B” 3.0 GB, “C” 2.0 GB and 1
+/// more»: the three reservations that hold most, by title.
+pub(super) fn disk_room_fact(free: u64, needed: u64, holders: &[alondra_view_model::LiveDiskHolder], lang: super::Lang) -> String {
     use alondra_core::machine_incident::bytes_text;
     let (free, needed) = (bytes_text(free, lang), bytes_text(needed, lang));
-    super::text::tf!(lang, "Disk · {free} free of {needed} needed", "Disco · {free} libres de {needed} necesarios")
+    let room = super::text::tf!(lang, "Disk · {free} free of {needed} needed", "Disco · {free} libres de {needed} necesarios");
+    const NAMED: usize = 3;
+    let named: Vec<String> = holders.iter().take(NAMED).map(|holder| {
+        let bytes = bytes_text(holder.bytes, lang);
+        match holder.title.as_deref().or(holder.task_id.as_deref()) {
+            Some(title) => super::text::tf!(lang, "“{title}” {bytes}", "«{title}» {bytes}"),
+            None => super::text::tf!(lang, "a scheduled run {bytes}", "una ejecución programada {bytes}"),
+        }
+    }).collect();
+    let more = holders.len().saturating_sub(NAMED);
+    let by = match (named.split_last(), more) {
+        (None, _) => return room,
+        (Some((only, [])), 0) => only.clone(),
+        (Some((last, rest)), 0) => {
+            let rest = rest.join(", ");
+            super::text::tf!(lang, "{rest} and {last}", "{rest} y {last}")
+        }
+        (Some(_), more) => {
+            let named = named.join(", ");
+            super::text::tf!(lang, "{named} and {more} more", "{named} y {more} más")
+        }
+    };
+    super::text::tf!(lang, "{room} · reserved by {by}", "{room} · reservado por {by}")
 }
 
 /// What the task of a node that runs through the Agent SDK does, from its lifecycle; `None` for a

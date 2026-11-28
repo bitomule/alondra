@@ -253,23 +253,19 @@ fn waiting(task: &Task, waits: WaitsFor, context: &RenderContext<'_>) -> Present
         WaitsFor::Slot => {
             let (fact, place) = slot_fact(task, context);
             queue = place;
-            if place.is_some() {
-                listed = Some(match common::gate_queued(task, context).map(|queued| &queued.hold) {
-                    Some(LiveHold::Disk { .. }) => disk(),
-                    _ => t!(lang, "Starts when there is room", "Arranca cuando haya sitio").into(),
-                });
+            if place.is_some() && !matches!(common::gate_queued(task, context).map(|queued| &queued.hold), Some(LiveHold::Disk { .. })) {
+                listed = Some(t!(lang, "Starts when there is room", "Arranca cuando haya sitio").into());
             }
             fact
         }
         WaitsFor::Machine => machine_fact(task, context),
         WaitsFor::Disk => {
-            listed = Some(disk());
             match (common::gate_queued(task, context), common::held_for_disk(task, context)) {
                 (Some(queued), Some(_)) => {
                     queue = Some(queued.position);
                     queue_fact(task, queued, lang)
                 }
-                (_, Some((free, needed))) => common::disk_room_fact(free, needed, lang),
+                (_, Some((free, needed, holders))) => common::disk_room_fact(free, needed, holders, lang),
                 _ => disk(),
             }
         }
@@ -391,8 +387,8 @@ fn queue_fact(task: &Task, queued: &super::LiveQueued, lang: super::Lang) -> Str
     match &queued.hold {
         LiveHold::Next if queued.position == 1 => t!(lang, "Starts within a minute", "Arranca en menos de un minuto").into(),
         LiveHold::Slots { working, limit } => tf!(lang, "{place} of {of} · {working} of {limit} slots taken", "{place} de {of} · {working} de {limit} huecos ocupados"),
-        LiveHold::Disk { free, needed } => {
-            let room = common::disk_room_fact(*free, *needed, lang);
+        LiveHold::Disk { free, needed, holders } => {
+            let room = common::disk_room_fact(*free, *needed, holders, lang);
             tf!(lang, "{place} of {of} · {room}", "{place} de {of} · {room}")
         }
         LiveHold::Memory { .. } => with_priority(task, tf!(lang, "{place} of {of} · the Mac is short of memory", "{place} de {of} · el Mac va justo de memoria"), lang),

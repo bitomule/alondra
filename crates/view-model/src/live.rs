@@ -247,7 +247,20 @@ pub enum LiveHold {
         free: u64,
         #[serde(default)]
         needed: u64,
+        /// What each other reservation holds of the disk, most first.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        holders: Vec<LiveDiskHolder>,
     },
+}
+
+/// A reservation of the disk that holds a start: a task's, or a scheduled run's that has no task.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LiveDiskHolder {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    pub bytes: u64,
 }
 /// `reason` is `usage_exhausted`, `disk_low`, `worktrees_unavailable`, `workspace_untrusted` (with the folder as `detail`)
 /// or `launch_failed` (with the error).

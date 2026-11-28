@@ -39,8 +39,15 @@ pub enum Hold {
     Slots { working: usize, limit: u32 },
     Memory { why: NoRoom, free: Option<u32> },
     Spacing { until: Millis },
-    /// No room on the Mac's disk for one more build.
-    Disk { free: u64, needed: u64 },
+    /// No room on the Mac's disk for one more build, with what each other reservation holds.
+    Disk { free: u64, needed: u64, holders: Vec<DiskHolder> },
+}
+
+/// What one reservation holds of the disk: a task's, or a scheduled run's that has no task.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiskHolder {
+    pub key: Key,
+    pub bytes: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
