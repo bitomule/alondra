@@ -417,6 +417,117 @@ fn a_continuation_an_older_version_recorded_takes_the_pull_request_when_the_orig
     }
 }
 
+const UNIT: &str = "billing/unit";
+
+/// Task `id` of the same request as `t`, whose validator recorded `billing/unit` met at
+/// `sha256:unit`, continuing `continues`.
+fn validated_task(s: &mut DomainState, id: &str, continues: Option<&str>) {
+    let request = the(s, "t").request_id.clone();
+    must(s, orchestrator(), Command::CreateTask { priority: Default::default(),
+        task_id: id.into(), request_id: request, title: format!("Task {id}"), agent_id: None, review_prs: false,
+        dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", "/repo/other")), plan_items: None, continues: None,
+    });
+    let task = s.tasks.get_mut(&TaskId::from(id)).unwrap();
+    task.continues = continues.map(TaskId::from);
+    task.validation.push_record(ValidationRecord { subject: UNIT.into(), kind: ValidationKind::Suite, inputs: "sha256:unit".into(), verdict: ValidationVerdict::Met,
+        round: 1, generation: 1, reasoning: None, nearest_wrong: None, output: Some("1 passed".into()), evidence: vec![], revision: 1 });
+}
+/// Task `t` without stages and with approved specs, continuing `continues` with no validation
+/// of its own, and the commit of its worktree, where the engine lists nothing, holding the ledger
+/// entry `billing/unit` `verdict` at `fingerprint`.
+fn continuing(s: &mut DomainState, continues: Option<&str>, verdict: ValidationVerdict, fingerprint: &str) {
+    s.tasks.get_mut(&TaskId::from("t")).unwrap().continues = continues.map(TaskId::from);
+    assert!(the(s, "t").validation.records.is_empty() && the(s, "t").gated());
+    let ledger = vec![LedgerEntry { subject: UNIT.into(), kind: ValidationKind::Suite, inputs: fingerprint.into(), verdict }];
+    let Command::RecordCommitReading { task_id, mut reading } = reading(vec![]) else { unreachable!() };
+    reading.ledger = ledger;
+    must(s, Actor::System, Command::RecordCommitReading { task_id, reading });
+}
+/// `present`, marking the approved plan's only point done with the delivered commit.
+fn present_done(id: &str) -> Command {
+    let Command::PresentResult { attachments, task_id, interaction_id, body, card, targets, is_final, nothing_to_review, .. } = present(id) else { unreachable!() };
+    let checklist = vec![ChecklistMark { item: "1".into(), evidence: vec![Evidence { kind: EvidenceKind::Commit, value: HEAD.into(), detail: None }] }];
+    Command::PresentResult { attachments, task_id, interaction_id, body, card, targets, is_final, nothing_to_review, checklist }
+}
+fn delivered(s: &DomainState) {
+    assert_eq!(the(s, "t").final_presentation, Some("result-1".into()));
+    assert!(s.interactions.get(&InteractionId::from("result-1")).is_some_and(|card| s.open(card)), "its card reaches the user");
+}
+fn refused_unrecorded(s: &mut DomainState) {
+    let refused = exec(s, node("a"), present_done("result-1")).unwrap_err();
+    assert_eq!(refused.code, "ledger_unrecorded");
+    assert!(refused.message.contains("billing/unit (suite)"), "{}", refused.message);
+    assert_eq!(the(s, "t").final_presentation, None, "no delivery is recorded");
+}
+
+// spec: task-flow.continuation/validated-work-is-delivered
+#[test]
+fn work_the_original_validated_is_delivered_by_the_task_that_continues_it() {
+    let mut s = approved();
+    validated_task(&mut s, "t-a", None);
+    continuing(&mut s, Some("t-a"), ValidationVerdict::Met, "sha256:unit");
+    let ready = Command::ReadyForValidation { task_id: "t".into(), head: HEAD.into(), items: vec![], scope: vec![] };
+    assert_eq!(exec(&mut s, node("a"), ready).unwrap_err().code, "nothing_to_validate");
+    must(&mut s, node("a"), present_done("result-1"));
+    delivered(&s);
+}
+
+// spec: task-flow.continuation/whole-chain-counts
+#[test]
+fn validations_count_along_the_whole_chain_of_continuations() {
+    let mut s = approved();
+    validated_task(&mut s, "t-a", None);
+    validated_task(&mut s, "t-b", Some("t-a"));
+    s.tasks.get_mut(&TaskId::from("t-b")).unwrap().validation.records.clear();
+    continuing(&mut s, Some("t-b"), ValidationVerdict::Met, "sha256:unit");
+    must(&mut s, node("a"), present_done("result-1"));
+    delivered(&s);
+}
+
+#[test]
+fn a_cycle_of_continuations_in_stored_data_ends_the_search() {
+    let mut s = approved();
+    validated_task(&mut s, "t-b", Some("t"));
+    s.tasks.get_mut(&TaskId::from("t-b")).unwrap().validation.records.clear();
+    continuing(&mut s, Some("t-b"), ValidationVerdict::Met, "sha256:unit");
+    refused_unrecorded(&mut s);
+}
+
+// spec: task-flow.continuation/carried-entry-must-match
+#[test]
+fn a_ledger_entry_that_differs_from_what_the_original_recorded_is_refused() {
+    for (verdict, fingerprint) in [(ValidationVerdict::Unmet, "sha256:unit"), (ValidationVerdict::Met, "sha256:other")] {
+        let mut s = approved();
+        validated_task(&mut s, "t-a", None);
+        continuing(&mut s, Some("t-a"), verdict, fingerprint);
+        refused_unrecorded(&mut s);
+    }
+}
+
+// spec: task-flow.continuation/unrelated-records-do-not-count
+#[test]
+fn records_of_a_task_it_does_not_continue_do_not_count() {
+    let mut s = approved();
+    validated_task(&mut s, "t-x", None);
+    continuing(&mut s, None, ValidationVerdict::Met, "sha256:unit");
+    refused_unrecorded(&mut s);
+}
+
+// spec: task-flow.continuation/stored-continuation-delivers
+#[test]
+fn a_continuation_stored_by_version_0_3_72_delivers_what_its_original_validated() {
+    let mut s = approved();
+    validated_task(&mut s, "t-a", None);
+    continuing(&mut s, Some("t-a"), ValidationVerdict::Met, "sha256:unit");
+    let stored = serde_json::to_value(&s).unwrap();
+    assert_eq!(stored["tasks"]["t"]["continues"], "t-a");
+    assert!(stored["tasks"]["t"]["validation"].get("records").is_none_or(|records| records.as_array().is_some_and(Vec::is_empty)));
+    assert_eq!(stored["tasks"]["t-a"]["validation"]["records"][0]["subject"], UNIT);
+    let mut read: DomainState = serde_json::from_value(stored).expect("the state stored by 0.3.72 still reads");
+    must(&mut read, node("a"), present_done("result-1"));
+    delivered(&read);
+}
+
 // ---- What the rules may reach ----
 
 const BOUNDARY: &str = include_str!("../../../specs/task-flow/boundary.toml");

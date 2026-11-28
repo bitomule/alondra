@@ -23,7 +23,7 @@ the same gate as a task in stages. What it finds unmet comes back to itself. The
 says that the agent that did the work validated it; a task in stages says a separate agent did.
 
 ## A task that continues another
-<!-- section: task-flow.continuation-overview explains: task-flow.continuation, decision:a-continuation-owns-the-open-pull-requests -->
+<!-- section: task-flow.continuation-overview explains: task-flow.continuation, decision:a-continuation-owns-the-open-pull-requests, decision:validations-carry-over-to-a-continuation -->
 
 The orchestrator may create a task that continues another when the first cannot finish its work.
 The new task takes the original's open worktrees, its checklist and its open pull requests in the
@@ -32,6 +32,16 @@ raises no card and closes nothing on GitHub, the original cannot register the pu
 and it never gets a new agent while the task that continues it is not finished. The sweep that
 looks for pull requests nobody owns counts the continuing task as the owner of the branch it
 inherited. A continuation is refused while the original's delivery waits for the user.
+
+The validations come along too. When the ledger of the continuing task's commit holds an entry
+that a validator of the original recorded, or of any task before it in the chain of
+continuations, with the same subject, fingerprint and verdict, that entry counts as recorded for
+the continuing task. Work already validated on that commit is then delivered without validating it
+again: asking for validation answers that there is nothing to validate, and presenting the result
+is accepted. An entry whose verdict or fingerprint differs from what was recorded, or that only an
+unrelated task recorded, is still refused. The check reads the original's records when the
+delivery is checked and stores nothing new, so a continuation refused before this change delivers
+once Alondra is updated.
 
 ## What the rules may reach
 <!-- section: task-flow.boundary-overview explains: task-flow.boundary, boundary:task-flow -->

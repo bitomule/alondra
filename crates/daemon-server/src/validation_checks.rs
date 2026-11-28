@@ -150,7 +150,7 @@ pub(crate) fn delivered_with(port: &dyn SpecWorktrees, images: &dyn KeptImages, 
     let base = port.base_commit(&root, &head).ok()?;
     let changed = port.changed(&root, &base, &head).ok()?;
     let base_files = port.commit(&root, &base).ok()?;
-    let mut shown = snapshot(&project, &report, task, delivery, &head, &changed);
+    let mut shown = snapshot(&project, &report, state, task_id, delivery, &head, &changed);
     keep_shown(&mut shown, &*files, &*base_files, images);
     let titles: std::collections::BTreeMap<&str, &str> = project.decisions().iter().map(|decision| (decision.id.as_str(), decision.title.as_str())).collect();
     for spec in &mut shown.specs {
@@ -205,14 +205,15 @@ fn keep_shown(shown: &mut DeliveredValidation, head: &dyn Files, base: &dyn File
 /// What the delivery's card shows of its specs: each spec the task's work is about, each scenario
 /// with the engine's state of its validations, the tests that declare it and what the validator
 /// said of its judgments; the suites; the files outside its components; the reference it changed.
-fn snapshot(project: &engine::Project, report: &engine::Report, task: &Task, delivery: &InteractionId, head: &str, changed: &[String]) -> DeliveredValidation {
+fn snapshot(project: &engine::Project, report: &engine::Report, state: &DomainState, task_id: &TaskId, delivery: &InteractionId, head: &str, changed: &[String]) -> DeliveredValidation {
+    let task = &state.tasks[task_id];
     let names = task_components(project, task);
     let state_of = |subject: &str, kind: engine::Kind| report.items.iter().find(|item| item.subject == subject && item.kind == kind).map(|item| item.state.as_str().to_owned());
     let mut suites = vec![];
     for component in project.components().iter().filter(|component| names.contains(&component.id)) {
         for suite in &component.suites {
             let id = format!("{}/{}", component.id, suite.id);
-            let record = project.fingerprint(&id, engine::Kind::Suite).and_then(|inputs| task.validation.record(&id, ValidationKind::Suite, &inputs));
+            let record = project.fingerprint(&id, engine::Kind::Suite).and_then(|inputs| state.validation_record(task_id, &id, ValidationKind::Suite, &inputs));
             suites.push(DeliveredSuite { state: state_of(&id, engine::Kind::Suite).unwrap_or_else(|| "valid".into()), verdict: record.map(|r| r.verdict), output: record.and_then(|r| r.output.clone()), id });
         }
     }
@@ -231,7 +232,7 @@ fn snapshot(project: &engine::Project, report: &engine::Report, task: &Task, del
             }).collect();
             let verdicts = [ValidationKind::Adequate, ValidationKind::Judged].into_iter().filter_map(|kind| {
                 let inputs = project.fingerprint(&id, kind.engine())?;
-                let record = task.validation.record(&id, kind, &inputs)?;
+                let record = state.validation_record(task_id, &id, kind, &inputs)?;
                 Some(DeliveredVerdict { kind, verdict: record.verdict, reasoning: record.reasoning.clone(), nearest_wrong: record.nearest_wrong.clone(), evidence: record.evidence.clone(), captures: vec![] })
             }).collect();
             DeliveredScenario {
@@ -538,6 +539,26 @@ mod tests {
         assert_eq!((part.tests[0].path.as_str(), part.tests[0].line, part.tests[0].suites.clone()), ("crates/billing/tests/refunds.rs", 1, vec!["billing/unit".to_owned()]));
         assert_eq!(part.verdicts[0].verdict, ValidationVerdict::Met);
         assert!(shown.outside.is_empty());
+    }
+
+    #[test]
+    fn the_card_of_a_continuations_delivery_shows_what_the_validator_of_its_original_recorded() {
+        let repo = Repo::new(base());
+        let head = implemented(&repo);
+        let mut state = validated(&repo, &head, true);
+        let mut original = state.tasks.remove(&TaskId::from("t")).unwrap();
+        original.id = "t-original".into();
+        original.state = TaskState::Cancelled;
+        let mut continuation = task(ExecutionRole::Validator);
+        continuation.continues = Some(original.id.clone());
+        state.tasks.insert(original.id.clone(), original);
+        state.tasks.insert("t".into(), continuation);
+        repo.commit('2', ledger_for(&repo, &head));
+        let shown = delivered_with(&repo, &NoImages, &state, &"t".into(), &delivery()).expect("its card shows the specs");
+        assert_eq!(shown.suites.iter().map(|suite| (suite.id.as_str(), suite.verdict)).collect::<Vec<_>>(), [("billing/unit", Some(ValidationVerdict::Met))]);
+        let verdicts: Vec<(&str, Option<&str>)> = shown.specs.iter().flat_map(|spec| &spec.scenarios)
+            .flat_map(|scenario| scenario.verdicts.iter().map(move |verdict| (scenario.id.as_str(), verdict.reasoning.as_deref()))).collect();
+        assert_eq!(verdicts, [("billing.partial/part", Some("Checked")), ("billing.partial/alone", Some("Checked"))]);
     }
 
     #[test]
