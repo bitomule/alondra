@@ -61,6 +61,29 @@ fn the_plans_card_shows_each_spec_as_a_sheet_with_its_steps_in_lanes_never_raw_g
     }
 }
 
+/// The plan card of a task that proposes specs and the editor its «Edit the specs» button opens, as
+/// the iPhone receives them: the goldens put the `task_specs:<task>` links in front of the walkers of
+/// the app's route tests.
+#[test]
+fn the_plan_card_with_specs_and_its_editor_are_goldens_whose_links_open_the_editor() {
+    let state = planned(SpecMode::Committed);
+    let live = LiveSnapshot::default();
+    for (lang, plan, editor, plan_expected, editor_expected) in [
+        (Lang::En, "card-plan-specs.json", "task-specs.json",
+            include_str!("../../../fixtures/views/cards/card-plan-specs.json"), include_str!("../../../fixtures/views/cards/task-specs.json")),
+        (Lang::Es, "card-plan-specs-es.json", "task-specs-es.json",
+            include_str!("../../../fixtures/views/cards/card-plan-specs-es.json"), include_str!("../../../fixtures/views/cards/task-specs-es.json")),
+    ] {
+        let view = render(&state, &live, Client::Ios, lang, "card:i-1", "2026-10-15T10:00:00Z");
+        assert_golden(plan, &view, plan_expected);
+        let specs = serde_json::to_string(view.sections.iter().find(|section| section.id == "specs").expect("the card has a Specs section")).unwrap();
+        assert!(specs.contains(r#""key":"task_specs:t-1""#), "the edit button opens the editor: {specs}");
+        let screen = render(&state, &live, Client::Ios, lang, "task_specs:t-1", "2026-10-15T10:00:00Z");
+        assert_golden(editor, &screen, editor_expected);
+        assert!(serde_json::to_string(&screen).unwrap().contains(r#""key":"task_specs:t-1:scenario:"#), "a scenario of the editor opens its own screen");
+    }
+}
+
 #[test]
 fn a_plan_whose_specs_or_settings_cannot_be_read_cannot_be_approved_and_says_why() {
     let mut state = planned(SpecMode::Committed);

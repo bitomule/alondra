@@ -987,7 +987,9 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
     if !specs.is_empty() {
         let mut items = vec![Item::Facts(Facts { items: specs })];
         if task.specs.draft.is_some() && context.domain.open_plan_card(&task.id).is_some() {
-            items.push(Item::Actions(super::ActionBar { actions: vec![common::view_link(&format!("{}:{}", super::specs::EDITOR, task.id), t!(context.lang, "Edit the specs", "Editar las specs"))] }));
+            let mut edit = common::view_link(&format!("{}:{}", super::specs::EDITOR, task.id), t!(context.lang, "Edit the specs", "Editar las specs"));
+            edit.key = Some("e".into());
+            items.push(Item::Actions(super::ActionBar { actions: vec![edit] }));
         }
         view.sections.push(common::section("specs", Some("Specs".into()), items));
     }
